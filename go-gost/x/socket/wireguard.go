@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -25,9 +26,16 @@ type WgPeer struct {
 type WgApplyRequest struct {
 	Name       string   `json:"name"`       // 组网名称(用于生成接口名与密钥文件)
 	Address    string   `json:"address"`    // 本机在组网内的IP (如 10.10.0.2/24)
-	ListenPort int      `json:"listenPort"` // 本机监听端口, 0 表示不监听(仅客户端)
+	ListenPort int      `json:"listenPort"` // 本机监听端口, 0 表示由内核选择
 	MTU        int      `json:"mtu,omitempty"`
+	Forwarding bool     `json:"forwarding,omitempty"` // hub 节点是否允许三层转发
 	Peers      []WgPeer `json:"peers"`
+}
+
+// WgPrepareRequest 仅准备密钥，不修改正在运行的接口。
+// 密钥准备与配置应用分离，避免两阶段同步时先清空现有 peers。
+type WgPrepareRequest struct {
+	Name string `json:"name"`
 }
 
 // WgApplyResponse 应用结果
@@ -35,6 +43,31 @@ type WgApplyResponse struct {
 	PublicKey string `json:"publicKey"`
 	Interface string `json:"interface"`
 	Changed   bool   `json:"changed"`
+}
+
+type WgStatusRequest struct {
+	Name string `json:"name"`
+}
+
+type WgPeerStatus struct {
+	PublicKey           string   `json:"publicKey"`
+	Endpoint            string   `json:"endpoint"`
+	AllowedIps          []string `json:"allowedIps"`
+	LatestHandshake     int64    `json:"latestHandshake"`
+	RxBytes             int64    `json:"rxBytes"`
+	TxBytes             int64    `json:"txBytes"`
+	PersistentKeepalive int      `json:"persistentKeepalive"`
+}
+
+type WgStatusResponse struct {
+	Interface  string         `json:"interface"`
+	Exists     bool           `json:"exists"`
+	Up         bool           `json:"up"`
+	PublicKey  string         `json:"publicKey"`
+	ListenPort int            `json:"listenPort"`
+	MTU        int            `json:"mtu"`
+	Addresses  []string       `json:"addresses"`
+	Peers      []WgPeerStatus `json:"peers"`
 }
 
 // WgRemoveRequest 移除WireGuard网络请求
@@ -50,8 +83,8 @@ type wgLocalState struct {
 }
 
 var (
-	wgMu      sync.Mutex
-	wgKeyDir  = "wgkeys"
+	wgMu     sync.Mutex
+	wgKeyDir = "wgkeys"
 )
 
 // ifaceName 由组网名生成稳定的接口名
@@ -69,7 +102,7 @@ func applyHash(req *WgApplyRequest) string {
 	h := sha256.New()
 	h.Write([]byte(req.Name))
 	h.Write([]byte(req.Address))
-	fmt.Fprintf(h, ":%d:%d", req.ListenPort, req.MTU)
+	fmt.Fprintf(h, ":%d:%d:%t", req.ListenPort, req.MTU, req.Forwarding)
 
 	peers := make([]string, 0, len(req.Peers))
 	for _, p := range req.Peers {
@@ -143,6 +176,36 @@ func runCmd(name string, args ...string) (string, error) {
 	return string(out), nil
 }
 
+func interfaceExists(iface string) (bool, error) {
+	_, err := runCmd("ip", "link", "show", "dev", iface)
+	if err == nil {
+		return true, nil
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "does not exist") || strings.Contains(msg, "Cannot find device") || strings.Contains(msg, "No such device") {
+		return false, nil
+	}
+	return false, err
+}
+
+func prepareWireGuard(req *WgPrepareRequest) (*WgApplyResponse, error) {
+	wgMu.Lock()
+	defer wgMu.Unlock()
+
+	if req.Name == "" {
+		return nil, fmt.Errorf("组网名称不能为空")
+	}
+	state, err := loadOrCreateKeys(req.Name)
+	if err != nil {
+		return nil, err
+	}
+	return &WgApplyResponse{
+		PublicKey: state.PublicKey,
+		Interface: ifaceName(req.Name),
+		Changed:   false,
+	}, nil
+}
+
 // applyWireGuard 应用一个WireGuard网络配置到本机
 // 配置指纹与上次一致时跳过重建, 避免中断既有连接
 func applyWireGuard(req *WgApplyRequest) (*WgApplyResponse, error) {
@@ -159,8 +222,13 @@ func applyWireGuard(req *WgApplyRequest) (*WgApplyResponse, error) {
 		return nil, err
 	}
 
+	ifaceExists, err := interfaceExists(iface)
+	if err != nil {
+		return nil, fmt.Errorf("检查wireguard接口失败: %v", err)
+	}
+
 	hash := applyHash(req)
-	if state.AppliedHash == hash {
+	if state.AppliedHash == hash && ifaceExists && !req.Forwarding {
 		// 配置未变化, 直接返回
 		return &WgApplyResponse{
 			PublicKey: state.PublicKey,
@@ -169,11 +237,17 @@ func applyWireGuard(req *WgApplyRequest) (*WgApplyResponse, error) {
 		}, nil
 	}
 
-	// 先删除旧接口, 保证配置完全一致
-	_, _ = runCmd("ip", "link", "del", iface)
-
-	if _, err := runCmd("ip", "link", "add", iface, "type", "wireguard"); err != nil {
-		return nil, fmt.Errorf("创建wireguard接口失败: %v", err)
+	created := false
+	if !ifaceExists {
+		if _, err := runCmd("ip", "link", "add", iface, "type", "wireguard"); err != nil {
+			return nil, fmt.Errorf("创建wireguard接口失败: %v", err)
+		}
+		created = true
+	}
+	cleanupCreated := func() {
+		if created {
+			_, _ = runCmd("ip", "link", "del", iface)
+		}
 	}
 
 	// 写入私钥文件供 wg set 使用
@@ -185,18 +259,55 @@ func applyWireGuard(req *WgApplyRequest) (*WgApplyResponse, error) {
 		return nil, err
 	}
 
-	args := []string{"set", iface, "private-key", keyPath}
-	if req.ListenPort > 0 {
-		args = append(args, "listen-port", fmt.Sprintf("%d", req.ListenPort))
-	}
+	defer os.Remove(keyPath)
+
+	args := []string{"set", iface, "private-key", keyPath, "listen-port", fmt.Sprintf("%d", req.ListenPort)}
 	if _, err := runCmd("wg", args...); err != nil {
-		_, _ = runCmd("ip", "link", "del", iface)
+		cleanupCreated()
 		return nil, fmt.Errorf("配置wg参数失败: %v", err)
+	}
+
+	// 增量删除不再存在的 peer，避免删除整个接口导致既有连接中断。
+	desiredPeers := make(map[string]struct{}, len(req.Peers))
+	for _, peer := range req.Peers {
+		if peer.PublicKey != "" {
+			desiredPeers[peer.PublicKey] = struct{}{}
+		}
+	}
+	if out, peerErr := runCmd("wg", "show", iface, "peers"); peerErr == nil {
+		for _, publicKey := range strings.Fields(out) {
+			if _, ok := desiredPeers[publicKey]; ok {
+				continue
+			}
+			if _, err := runCmd("wg", "set", iface, "peer", publicKey, "remove"); err != nil {
+				cleanupCreated()
+				return nil, fmt.Errorf("移除过期peer失败: %v", err)
+			}
+		}
+	}
+	currentEndpoints := make(map[string]string)
+	if out, endpointErr := runCmd("wg", "show", iface, "endpoints"); endpointErr == nil {
+		for _, line := range strings.Split(out, "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				currentEndpoints[fields[0]] = fields[1]
+			}
+		}
 	}
 
 	for _, peer := range req.Peers {
 		if peer.PublicKey == "" {
 			continue
+		}
+		// 从 mesh 切换到 hub 时，中心节点必须忘掉分支的旧固定 Endpoint，
+		// 才能根据分支主动握手重新学习 NAT 后地址。
+		if peer.Endpoint == "" {
+			if endpoint := currentEndpoints[peer.PublicKey]; endpoint != "" && endpoint != "(none)" {
+				if _, err := runCmd("wg", "set", iface, "peer", peer.PublicKey, "remove"); err != nil {
+					cleanupCreated()
+					return nil, fmt.Errorf("清除peer旧endpoint失败: %v", err)
+				}
+			}
 		}
 		pargs := []string{"set", iface, "peer", peer.PublicKey}
 		if peer.Endpoint != "" {
@@ -209,35 +320,152 @@ func applyWireGuard(req *WgApplyRequest) (*WgApplyResponse, error) {
 			pargs = append(pargs, "persistent-keepalive", fmt.Sprintf("%d", peer.PersistentKeepalive))
 		}
 		if _, err := runCmd("wg", pargs...); err != nil {
-			_, _ = runCmd("ip", "link", "del", iface)
+			cleanupCreated()
 			return nil, fmt.Errorf("配置peer失败: %v", err)
 		}
 	}
 
-	// 配置地址与MTU
+	// 接口为面板专用，移除不再属于当前组网的旧 IPv4 地址。
 	if req.Address != "" {
-		if _, err := runCmd("ip", "addr", "add", req.Address, "dev", iface); err != nil {
-			_, _ = runCmd("ip", "link", "del", iface)
+		if out, addrErr := runCmd("ip", "-o", "addr", "show", "dev", iface); addrErr == nil {
+			for _, line := range strings.Split(out, "\n") {
+				fields := strings.Fields(line)
+				if len(fields) >= 4 && fields[2] == "inet" && fields[3] != req.Address {
+					_, _ = runCmd("ip", "addr", "del", fields[3], "dev", iface)
+				}
+			}
+		}
+		if _, err := runCmd("ip", "addr", "replace", req.Address, "dev", iface); err != nil {
+			cleanupCreated()
 			return nil, fmt.Errorf("配置地址失败: %v", err)
 		}
 	}
 	if req.MTU > 0 {
-		_, _ = runCmd("ip", "link", "set", iface, "mtu", fmt.Sprintf("%d", req.MTU))
+		if _, err := runCmd("ip", "link", "set", iface, "mtu", fmt.Sprintf("%d", req.MTU)); err != nil {
+			cleanupCreated()
+			return nil, fmt.Errorf("配置MTU失败: %v", err)
+		}
 	}
 	if _, err := runCmd("ip", "link", "set", iface, "up"); err != nil {
-		_, _ = runCmd("ip", "link", "del", iface)
+		cleanupCreated()
 		return nil, fmt.Errorf("启用接口失败: %v", err)
+	}
+	if err := configureWireGuardForwarding(iface, req.Forwarding); err != nil {
+		return nil, err
 	}
 
 	state.AppliedHash = hash
 	saveState(req.Name, state)
-	_ = os.Remove(keyPath)
-
 	return &WgApplyResponse{
 		PublicKey: state.PublicKey,
 		Interface: iface,
 		Changed:   true,
 	}, nil
+}
+
+// configureWireGuardForwarding 只放行同一组网接口内的分支互访，不开放公网转发。
+// Hub 每次同步都会校验规则，以便在 Docker/防火墙重载后自动修复。
+func configureWireGuardForwarding(iface string, enabled bool) error {
+	if _, err := exec.LookPath("iptables"); err != nil {
+		if enabled {
+			_, err = runCmd("sysctl", "-w", "net.ipv4.ip_forward=1")
+			if err != nil {
+				return fmt.Errorf("启用hub转发失败: %v", err)
+			}
+		}
+		return nil
+	}
+
+	rule := []string{"FORWARD", "-i", iface, "-o", iface, "-j", "ACCEPT"}
+	if !enabled {
+		_, _ = runCmd("iptables", append([]string{"-D"}, rule...)...)
+		return nil
+	}
+	if _, err := runCmd("sysctl", "-w", "net.ipv4.ip_forward=1"); err != nil {
+		return fmt.Errorf("启用hub转发失败: %v", err)
+	}
+	if _, err := runCmd("iptables", append([]string{"-C"}, rule...)...); err != nil {
+		if _, err := runCmd("iptables", append([]string{"-I"}, rule...)...); err != nil {
+			return fmt.Errorf("配置hub防火墙转发规则失败: %v", err)
+		}
+	}
+	return nil
+}
+
+func wireGuardStatus(req *WgStatusRequest) (*WgStatusResponse, error) {
+	if req.Name == "" {
+		return nil, fmt.Errorf("组网名称不能为空")
+	}
+	iface := ifaceName(req.Name)
+	resp := &WgStatusResponse{Interface: iface, Addresses: []string{}, Peers: []WgPeerStatus{}}
+	exists, err := interfaceExists(iface)
+	if err != nil {
+		return nil, err
+	}
+	resp.Exists = exists
+	if !exists {
+		return resp, nil
+	}
+
+	if out, err := runCmd("ip", "-o", "link", "show", "dev", iface); err == nil {
+		fields := strings.Fields(out)
+		for i, field := range fields {
+			if field == "mtu" && i+1 < len(fields) {
+				resp.MTU, _ = strconv.Atoi(fields[i+1])
+			}
+		}
+		if start := strings.Index(out, "<"); start >= 0 {
+			if end := strings.Index(out[start:], ">"); end > 0 {
+				resp.Up = strings.Contains(out[start:start+end], "UP")
+			}
+		}
+	}
+	if out, err := runCmd("ip", "-o", "addr", "show", "dev", iface); err == nil {
+		for _, line := range strings.Split(out, "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 4 && (fields[2] == "inet" || fields[2] == "inet6") {
+				resp.Addresses = append(resp.Addresses, fields[3])
+			}
+		}
+	}
+
+	dump, err := runCmd("wg", "show", iface, "dump")
+	if err != nil {
+		return nil, fmt.Errorf("读取wireguard状态失败: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(dump), "\n")
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) == "" {
+		return resp, nil
+	}
+	ifaceFields := strings.Split(lines[0], "\t")
+	if len(ifaceFields) >= 3 {
+		resp.PublicKey = ifaceFields[1]
+		resp.ListenPort, _ = strconv.Atoi(ifaceFields[2])
+	}
+	for _, line := range lines[1:] {
+		fields := strings.Split(line, "\t")
+		if len(fields) < 8 {
+			continue
+		}
+		peer := WgPeerStatus{
+			PublicKey: fields[0],
+			Endpoint:  fields[2],
+		}
+		if peer.Endpoint == "(none)" {
+			peer.Endpoint = ""
+		}
+		if fields[3] != "" && fields[3] != "(none)" {
+			peer.AllowedIps = strings.Split(fields[3], ",")
+		} else {
+			peer.AllowedIps = []string{}
+		}
+		peer.LatestHandshake, _ = strconv.ParseInt(fields[4], 10, 64)
+		peer.RxBytes, _ = strconv.ParseInt(fields[5], 10, 64)
+		peer.TxBytes, _ = strconv.ParseInt(fields[6], 10, 64)
+		peer.PersistentKeepalive, _ = strconv.Atoi(fields[7])
+		resp.Peers = append(resp.Peers, peer)
+	}
+	return resp, nil
 }
 
 // removeWireGuard 移除本地WireGuard接口
@@ -249,6 +477,7 @@ func removeWireGuard(req *WgRemoveRequest) error {
 		return fmt.Errorf("组网名称不能为空")
 	}
 	iface := ifaceName(req.Name)
+	_ = configureWireGuardForwarding(iface, false)
 	if _, err := runCmd("ip", "link", "del", iface); err != nil {
 		// 接口不存在视为成功
 		if strings.Contains(err.Error(), "Cannot find device") || strings.Contains(err.Error(), "does not exist") {

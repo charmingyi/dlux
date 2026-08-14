@@ -64,4 +64,11 @@ public class WgController extends BaseController {
         return wgNetworkService.syncNetwork(id);
     }
 
+    @RequireRole
+    @PostMapping("/status")
+    public R status(@RequestBody Map<String, Object> params) {
+        Long id = Long.valueOf(params.get("id").toString());
+        return wgNetworkService.getNetworkStatus(id);
+    }
+
 }

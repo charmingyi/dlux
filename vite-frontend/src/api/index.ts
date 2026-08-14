@@ -34,6 +34,7 @@ export const getWgNetworkList = () => Network.post("/wg/list");
 export const updateWgNetwork = (data: any) => Network.post("/wg/update", data);
 export const deleteWgNetwork = (id: number) => Network.post("/wg/delete", { id });
 export const syncWgNetwork = (id: number) => Network.post("/wg/sync", { id });
+export const getWgNetworkStatus = (id: number) => Network.post("/wg/status", { id });
 
 // 线路CRUD
 export const createLink = (data: any) => Network.post("/link/create", data);
@@ -50,6 +51,7 @@ export const deleteGroup = (id: number) => Network.post("/group/delete", { id })
 
 // 转发CRUD操作
 export const createForward = (data: any) => Network.post("/forward/create", data);
+export const createForwardPlan = (data: any) => Network.post("/forward/create-plan", data);
 export const getForwardList = () => Network.post("/forward/list");
 export const updateForward = (data: any) => Network.post("/forward/update", data);
 export const deleteForward = (id: number) => Network.post("/forward/delete", { id });

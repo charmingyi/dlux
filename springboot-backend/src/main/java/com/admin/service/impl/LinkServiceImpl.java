@@ -107,7 +107,7 @@ public class LinkServiceImpl extends ServiceImpl<LinkMapper, Link> implements Li
             return chainResult;
         }
 
-        return R.ok();
+        return R.ok(link.getId());
     }
 
     @Override

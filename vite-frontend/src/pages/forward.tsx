@@ -18,10 +18,12 @@ import {
   pauseForwardService,
   resumeForwardService,
   diagnoseForward,
+  createForwardPlan,
   getGroupList,
-  getSpeedLimitList
+  getSpeedLimitList,
+  getWgNetworkList
 } from "@/api";
-import type { ForwardItem, GroupItem, SpeedLimit } from "@/types";
+import type { ForwardItem, GroupItem, SpeedLimit, WgNetwork } from "@/types";
 
 const TARGET_STRATEGIES = [
   { value: 'round', label: '轮询' },
@@ -63,6 +65,26 @@ const defaultForm: ForwardForm = {
   inPort: null
 };
 
+interface QuickRoute {
+  exitNodeId: number | null;
+  hopNodeIds: number[];
+  weight: number;
+}
+
+interface QuickTopology {
+  wgNetworkId: number | null;
+  entryNodeId: number | null;
+  groupStrategy: string;
+  routes: QuickRoute[];
+}
+
+const defaultQuickTopology: QuickTopology = {
+  wgNetworkId: null,
+  entryNodeId: null,
+  groupStrategy: 'fifo',
+  routes: [{ exitNodeId: null, hopNodeIds: [], weight: 1 }]
+};
+
 interface DiagResult {
   nodeName?: string;
   description?: string;
@@ -76,6 +98,7 @@ export default function ForwardPage() {
   const [forwardList, setForwardList] = useState<ForwardItem[]>([]);
   const [groupOptions, setGroupOptions] = useState<GroupItem[]>([]);
   const [speedOptions, setSpeedOptions] = useState<SpeedLimit[]>([]);
+  const [wgOptions, setWgOptions] = useState<WgNetwork[]>([]);
   const [loading, setLoading] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [isEdit, setIsEdit] = useState(false);
@@ -88,6 +111,8 @@ export default function ForwardPage() {
   const [diagnoseTarget, setDiagnoseTarget] = useState<ForwardItem | null>(null);
   const [diagnoseLoading, setDiagnoseLoading] = useState(false);
   const [diagResults, setDiagResults] = useState<DiagResult[]>([]);
+  const [createMode, setCreateMode] = useState<'quick' | 'existing'>('quick');
+  const [quickTopology, setQuickTopology] = useState<QuickTopology>(defaultQuickTopology);
 
   const loadForwards = async () => {
     setLoading(true);
@@ -104,9 +129,12 @@ export default function ForwardPage() {
 
   const loadOptions = async () => {
     try {
-      const [groupRes, speedRes] = await Promise.all([getGroupList(), getSpeedLimitList()]);
+      const [groupRes, speedRes, wgRes] = await Promise.all([
+        getGroupList(), getSpeedLimitList(), getWgNetworkList()
+      ]);
       if (groupRes.code === 0) setGroupOptions(groupRes.data || []);
       if (speedRes.code === 0) setSpeedOptions(speedRes.data || []);
+      if (wgRes.code === 0) setWgOptions(wgRes.data || []);
     } catch (e) {
       // ignore
     }
@@ -121,6 +149,8 @@ export default function ForwardPage() {
 
   const openCreate = () => {
     setForm(defaultForm);
+    setQuickTopology(defaultQuickTopology);
+    setCreateMode('quick');
     setIsEdit(false);
     setErrors({});
     setDialogOpen(true);
@@ -137,6 +167,7 @@ export default function ForwardPage() {
       inPort: forward.inPort
     });
     setIsEdit(true);
+    setCreateMode('existing');
     setErrors({});
     setDialogOpen(true);
   };
@@ -144,7 +175,18 @@ export default function ForwardPage() {
   const validateForm = () => {
     const errs: Record<string, string> = {};
     if (!form.name.trim()) errs.name = '请输入转发名称';
-    if (form.groupId == null) errs.groupId = '请选择负载均衡组';
+    if ((isEdit || createMode === 'existing') && form.groupId == null) errs.groupId = '请选择负载均衡组';
+	if (!isEdit && createMode === 'quick') {
+	  if (quickTopology.wgNetworkId == null) errs.wgNetworkId = '请选择 WireGuard 组网';
+	  if (quickTopology.entryNodeId == null) errs.entryNodeId = '请选择入口节点';
+	  if (!quickTopology.routes.length) errs.routes = '至少添加一条线路';
+	  quickTopology.routes.forEach((route, index) => {
+	    if (route.exitNodeId == null) errs[`route${index}`] = `第 ${index + 1} 条线路缺少出口节点`;
+	    if (route.exitNodeId === quickTopology.entryNodeId) errs[`route${index}`] = `第 ${index + 1} 条线路的出口不能等于入口`;
+	    const order = [quickTopology.entryNodeId, ...route.hopNodeIds, route.exitNodeId].filter(v => v != null);
+	    if (new Set(order).size !== order.length) errs[`route${index}`] = `第 ${index + 1} 条线路存在重复节点`;
+	  });
+	}
     if (!form.remoteAddr.trim()) errs.remoteAddr = '请输入目标地址';
     if (form.remoteAddr.trim().split(/[,，\n]/).filter(s => s.trim()).some(s => !s.trim().includes(':'))) {
       errs.remoteAddr = '目标地址格式应为 ip:port, 多个用逗号分隔';
@@ -168,11 +210,33 @@ export default function ForwardPage() {
         speedId: form.speedId,
         inPort: form.inPort
       };
-      const res = isEdit ? await updateForward({ id: form.id, ...payload }) : await createForward(payload);
+      const res = isEdit
+        ? await updateForward({ id: form.id, ...payload })
+        : createMode === 'quick'
+          ? await createForwardPlan({
+              name: form.name,
+              entryNodeId: quickTopology.entryNodeId,
+              wgNetworkId: quickTopology.wgNetworkId,
+              routes: quickTopology.routes.map((route, index) => ({
+                name: `${form.name} · 路径${index + 1}`,
+                exitNodeId: route.exitNodeId,
+                hopNodeIds: route.hopNodeIds,
+                weight: route.weight
+              })),
+              groupStrategy: quickTopology.groupStrategy,
+              maxFails: 1,
+              failTimeout: '30s',
+              remoteAddr: payload.remoteAddr,
+              targetStrategy: payload.targetStrategy,
+              speedId: payload.speedId,
+              inPort: payload.inPort
+            })
+          : await createForward(payload);
       if (res.code === 0) {
-        toast.success(isEdit ? '转发更新成功' : '转发创建成功');
+        toast.success(isEdit ? '转发更新成功' : createMode === 'quick' ? '组网线路、路由组和转发已一体化创建' : '转发创建成功');
         setDialogOpen(false);
         loadForwards();
+        loadOptions();
       } else {
         toast.error(res.msg || '操作失败');
       }
@@ -243,13 +307,26 @@ export default function ForwardPage() {
   );
 
   const groupEntry = (groupId: number) => groupOptions.find(g => g.id === groupId);
+  const selectedWg = wgOptions.find(network => network.id === quickTopology.wgNetworkId);
+  const availableMembers = selectedWg?.members || [];
+
+  const updateQuickRoute = (index: number, patch: Partial<QuickRoute>) => {
+    setQuickTopology(current => ({
+      ...current,
+      routes: current.routes.map((route, routeIndex) => routeIndex === index ? { ...route, ...patch } : route)
+    }));
+  };
+
+  const removeQuickRoute = (index: number) => {
+    setQuickTopology(current => ({ ...current, routes: current.routes.filter((_, routeIndex) => routeIndex !== index) }));
+  };
 
   return (
     <div className="p-4 lg:p-6 space-y-4">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-xl font-bold">端口转发</h2>
-          <p className="text-sm text-default-500 mt-1">转发 = 入口端口 → 负载均衡组(多线路) → 目标</p>
+          <p className="text-sm text-default-500 mt-1">默认一次选择组网、路径和目标；线路与负载均衡组自动创建，高级页面仍可单独编排。</p>
         </div>
         <Button color="primary" onPress={openCreate}>新建转发</Button>
       </div>
@@ -258,7 +335,7 @@ export default function ForwardPage() {
         <div className="flex justify-center py-20"><Spinner size="lg" /></div>
       ) : forwardList.length === 0 ? (
         <Card className="mt-4">
-          <CardBody className="text-center text-default-500 py-16">暂无转发, 点击右上角"新建转发"创建</CardBody>
+          <CardBody className="text-center text-default-500 py-16">暂无转发，点击右上角“新建转发”创建</CardBody>
         </Card>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -325,103 +402,128 @@ export default function ForwardPage() {
       )}
 
       {/* 创建/编辑弹窗 */}
-      <Modal isOpen={dialogOpen} onOpenChange={setDialogOpen} size="2xl" backdrop="blur" placement="center">
+      <Modal isOpen={dialogOpen} onOpenChange={setDialogOpen} size="4xl" scrollBehavior="inside" backdrop="blur" placement="center">
         <ModalContent>
           {(onClose: () => void) => (
             <>
-              <ModalHeader>{isEdit ? '编辑转发' : '新建转发'}</ModalHeader>
+              <ModalHeader>{isEdit ? '编辑转发' : '创建转发任务'}</ModalHeader>
               <ModalBody>
-                <div className="space-y-4">
-                  <div className="grid grid-cols-2 gap-4">
-                    <Input
-                      label="转发名称"
-                      placeholder="如: 网站80端口"
-                      value={form.name}
-                      onChange={e => setForm({ ...form, name: e.target.value })}
-                      errorMessage={errors.name}
-                      isInvalid={!!errors.name}
-                      variant="bordered"
-                    />
-                    <Input
-                      label="入口端口 (留空自动分配)"
-                      type="number"
-                      placeholder="自动"
-                      value={form.inPort != null ? String(form.inPort) : ''}
-                      onChange={e => setForm({ ...form, inPort: e.target.value ? Number(e.target.value) : null })}
-                      errorMessage={errors.inPort}
-                      isInvalid={!!errors.inPort}
-                      variant="bordered"
-                    />
+                <div className="space-y-5">
+                  {!isEdit && (
+                    <div className="grid grid-cols-2 gap-2 rounded-xl bg-default-100 p-1.5">
+                      <Button color={createMode === 'quick' ? 'primary' : 'default'} variant={createMode === 'quick' ? 'solid' : 'light'} onPress={() => setCreateMode('quick')}>
+                        一体化创建（推荐）
+                      </Button>
+                      <Button color={createMode === 'existing' ? 'primary' : 'default'} variant={createMode === 'existing' ? 'solid' : 'light'} onPress={() => setCreateMode('existing')}>
+                        使用已有路由组
+                      </Button>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <Input label="转发名称" placeholder="如：Emby 香港入口" value={form.name} onChange={event => setForm({ ...form, name: event.target.value })} errorMessage={errors.name} isInvalid={!!errors.name} variant="bordered" />
+                    <Input label="入口端口（留空自动分配）" type="number" placeholder="自动" value={form.inPort != null ? String(form.inPort) : ''} onChange={event => setForm({ ...form, inPort: event.target.value ? Number(event.target.value) : null })} errorMessage={errors.inPort} isInvalid={!!errors.inPort} variant="bordered" />
                   </div>
-                  <Select
-                    label="负载均衡组"
-                    placeholder="选择组"
-                    selectedKeys={form.groupId != null ? new Set([String(form.groupId)]) : new Set()}
-                    onSelectionChange={keys => {
-                      const arr = Array.from(keys);
-                      setForm({ ...form, groupId: arr.length ? Number(arr[0]) : null });
-                    }}
-                    errorMessage={errors.groupId}
-                    isInvalid={!!errors.groupId}
-                    variant="bordered"
-                  >
-                    {groupOptions.map(group => (
-                      <SelectItem key={String(group.id)} textValue={group.name}>
-                        {group.name} ({group.linkCount}线 · {group.strategy})
-                      </SelectItem>
-                    ))}
-                  </Select>
-                  <Textarea
-                    label="目标地址 (多个用逗号分隔)"
-                    placeholder="1.2.3.4:80, 5.6.7.8:80"
-                    value={form.remoteAddr}
-                    onChange={e => setForm({ ...form, remoteAddr: e.target.value })}
-                    errorMessage={errors.remoteAddr}
-                    isInvalid={!!errors.remoteAddr}
-                    variant="bordered"
-                  />
-                  <div className="grid grid-cols-2 gap-4">
-                    <Select
-                      label="目标选择策略"
-                      selectedKeys={new Set([form.targetStrategy])}
-                      onSelectionChange={keys => {
-                        const arr = Array.from(keys);
-                        if (arr.length) setForm({ ...form, targetStrategy: String(arr[0]) });
-                      }}
-                      variant="bordered"
-                    >
-                      {TARGET_STRATEGIES.map(s => (
-                        <SelectItem key={s.value} textValue={s.label}>{s.label}</SelectItem>
-                      ))}
+
+                  {!isEdit && createMode === 'quick' ? (
+                    <div className="space-y-4 rounded-xl border border-primary-200 p-4">
+                      <div>
+                        <div className="font-semibold">1. 选择组网与入口</div>
+                        <div className="text-xs text-default-500 mt-1">这里只展示已经加入 WireGuard 组网的节点；线路、中继和负载均衡组由后端自动生成。</div>
+                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <Select label="WireGuard 组网" placeholder="选择已握手的组网" selectedKeys={quickTopology.wgNetworkId != null ? new Set([String(quickTopology.wgNetworkId)]) : new Set()} onSelectionChange={keys => {
+                          const values = Array.from(keys);
+                          setQuickTopology({ ...defaultQuickTopology, wgNetworkId: values.length ? Number(values[0]) : null });
+                        }} errorMessage={errors.wgNetworkId} isInvalid={!!errors.wgNetworkId} variant="bordered">
+                          {wgOptions.map(network => <SelectItem key={String(network.id)} textValue={network.name}>{network.name} · {network.mode} · {network.members.length} 节点</SelectItem>)}
+                        </Select>
+                        <Select label="入口节点" placeholder="客户端连接的节点" selectedKeys={quickTopology.entryNodeId != null ? new Set([String(quickTopology.entryNodeId)]) : new Set()} onSelectionChange={keys => {
+                          const values = Array.from(keys);
+                          const entryNodeId = values.length ? Number(values[0]) : null;
+                          setQuickTopology(current => ({ ...current, entryNodeId, routes: current.routes.map(route => route.exitNodeId === entryNodeId ? { ...route, exitNodeId: null } : route) }));
+                        }} errorMessage={errors.entryNodeId} isInvalid={!!errors.entryNodeId} variant="bordered" isDisabled={!selectedWg}>
+                          {availableMembers.map(member => <SelectItem key={String(member.nodeId)} textValue={member.nodeName}>{member.nodeName} · {member.ip} · {member.nodeStatus === 1 ? '在线' : '离线'}</SelectItem>)}
+                        </Select>
+                      </div>
+
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <div className="font-semibold">2. 编排路径</div>
+                          <div className="text-xs text-default-500">一条路径表示 入口 → 中间节点（可选）→ 出口。添加多条即可负载均衡或故障切换。</div>
+                        </div>
+                        <Button size="sm" color="primary" variant="flat" isDisabled={!selectedWg || quickTopology.routes.length >= 6} onPress={() => setQuickTopology(current => ({ ...current, routes: [...current.routes, { exitNodeId: null, hopNodeIds: [], weight: 1 }] }))}>添加路径</Button>
+                      </div>
+
+                      <div className="space-y-3">
+                        {quickTopology.routes.map((route, index) => (
+                          <div key={index} className="rounded-xl bg-default-100 p-3 space-y-3">
+                            <div className="flex items-center justify-between">
+                              <span className="font-medium text-sm">路径 {index + 1}</span>
+                              {quickTopology.routes.length > 1 && <Button size="sm" color="danger" variant="light" onPress={() => removeQuickRoute(index)}>移除</Button>}
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr_110px] gap-3">
+                              <Select label="中间节点（可选，按选择顺序）" selectionMode="multiple" selectedKeys={new Set(route.hopNodeIds.map(String))} onSelectionChange={keys => updateQuickRoute(index, { hopNodeIds: Array.from(keys).map(Number) })} variant="bordered" isDisabled={!quickTopology.entryNodeId}>
+                                {availableMembers.filter(member => member.nodeId !== quickTopology.entryNodeId && member.nodeId !== route.exitNodeId).map(member => <SelectItem key={String(member.nodeId)} textValue={member.nodeName}>{member.nodeName} · {member.ip}</SelectItem>)}
+                              </Select>
+                              <Select label="出口 / 落地节点" placeholder="选择最终出口" selectedKeys={route.exitNodeId != null ? new Set([String(route.exitNodeId)]) : new Set()} onSelectionChange={keys => {
+                                const values = Array.from(keys);
+                                const exitNodeId = values.length ? Number(values[0]) : null;
+                                updateQuickRoute(index, { exitNodeId, hopNodeIds: route.hopNodeIds.filter(nodeId => nodeId !== exitNodeId) });
+                              }} errorMessage={errors[`route${index}`]} isInvalid={!!errors[`route${index}`]} variant="bordered" isDisabled={!quickTopology.entryNodeId}>
+                                {availableMembers.filter(member => member.nodeId !== quickTopology.entryNodeId).map(member => <SelectItem key={String(member.nodeId)} textValue={member.nodeName}>{member.nodeName} · {member.ip} · {member.nodeStatus === 1 ? '在线' : '离线'}</SelectItem>)}
+                              </Select>
+                              <Input label="权重" type="number" min={1} value={String(route.weight)} onChange={event => updateQuickRoute(index, { weight: Math.max(1, Number(event.target.value)) })} variant="bordered" />
+                            </div>
+                            <div className="text-xs font-mono text-default-500">
+                              {availableMembers.find(member => member.nodeId === quickTopology.entryNodeId)?.nodeName || '入口'}
+                              {' → '}{route.hopNodeIds.map(nodeId => availableMembers.find(member => member.nodeId === nodeId)?.nodeName || `#${nodeId}`).join(' → ')}
+                              {route.hopNodeIds.length ? ' → ' : ''}{availableMembers.find(member => member.nodeId === route.exitNodeId)?.nodeName || '请选择出口'}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      {errors.routes && <p className="text-xs text-danger">{errors.routes}</p>}
+
+                      <Select label="多路径策略" selectedKeys={new Set([quickTopology.groupStrategy])} onSelectionChange={keys => {
+                        const values = Array.from(keys);
+                        if (values.length) setQuickTopology(current => ({ ...current, groupStrategy: String(values[0]) }));
+                      }} description="单线路建议失败切换；多线路可选最佳延迟、轮询或会话哈希" variant="bordered">
+                        {TARGET_STRATEGIES.map(strategy => <SelectItem key={strategy.value} textValue={strategy.label}>{strategy.label}</SelectItem>)}
+                      </Select>
+                    </div>
+                  ) : (
+                    <Select label="已有负载均衡组" placeholder="选择高级编排中已有的组" selectedKeys={form.groupId != null ? new Set([String(form.groupId)]) : new Set()} onSelectionChange={keys => {
+                      const values = Array.from(keys);
+                      setForm({ ...form, groupId: values.length ? Number(values[0]) : null });
+                    }} errorMessage={errors.groupId} isInvalid={!!errors.groupId} variant="bordered">
+                      {groupOptions.map(group => <SelectItem key={String(group.id)} textValue={group.name}>{group.name} · {group.linkCount} 条线路 · {targetStrategyLabel(group.strategy)}</SelectItem>)}
                     </Select>
-                    <Select
-                      label="限速规则 (可选)"
-                      placeholder="不限速"
-                      selectedKeys={form.speedId != null ? new Set([String(form.speedId)]) : new Set()}
-                      onSelectionChange={keys => {
-                        const arr = Array.from(keys);
-                        setForm({ ...form, speedId: arr.length ? Number(arr[0]) : null });
-                      }}
-                      variant="bordered"
-                    >
-                      {speedOptions.map(s => (
-                        <SelectItem key={String(s.id)} textValue={s.name}>{s.name} ({s.speed}Mbps)</SelectItem>
-                      ))}
+                  )}
+
+                  <Textarea label="最终目标地址（多个用逗号或换行分隔）" placeholder="1.2.3.4:8096" value={form.remoteAddr} onChange={event => setForm({ ...form, remoteAddr: event.target.value })} errorMessage={errors.remoteAddr} isInvalid={!!errors.remoteAddr} description="目标由每条路径的出口节点访问" variant="bordered" />
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <Select label="多目标选择策略" selectedKeys={new Set([form.targetStrategy])} onSelectionChange={keys => {
+                      const values = Array.from(keys);
+                      if (values.length) setForm({ ...form, targetStrategy: String(values[0]) });
+                    }} variant="bordered">
+                      {TARGET_STRATEGIES.map(strategy => <SelectItem key={strategy.value} textValue={strategy.label}>{strategy.label}</SelectItem>)}
+                    </Select>
+                    <Select label="限速规则（可选）" placeholder="不限速" selectedKeys={form.speedId != null ? new Set([String(form.speedId)]) : new Set()} onSelectionChange={keys => {
+                      const values = Array.from(keys);
+                      setForm({ ...form, speedId: values.length ? Number(values[0]) : null });
+                    }} variant="bordered">
+                      {speedOptions.map(speed => <SelectItem key={String(speed.id)} textValue={speed.name}>{speed.name} · {speed.speed} Mbps</SelectItem>)}
                     </Select>
                   </div>
-                  {form.groupId != null && (() => {
-                    const group = groupEntry(form.groupId);
-                    return group ? (
-                      <p className="text-xs text-default-400">
-                        入口节点: 组内线路共享入口 · 目标延迟由各线路出口节点实测
-                      </p>
-                    ) : null;
-                  })()}
+                  {(isEdit || createMode === 'existing') && form.groupId != null && groupEntry(form.groupId) && (
+                    <p className="text-xs text-default-400">该组的所有线路共享同一入口；修改到不同入口组时，后端会先清理旧入口服务再下发。</p>
+                  )}
                 </div>
               </ModalBody>
               <ModalFooter>
-                <Button color="default" variant="light" onPress={onClose}>取消</Button>
-                <Button color="primary" onPress={handleSubmit} isLoading={submitLoading}>确定</Button>
+                <Button variant="light" onPress={onClose}>取消</Button>
+                <Button color="primary" onPress={handleSubmit} isLoading={submitLoading}>{isEdit ? '保存并重下发' : createMode === 'quick' ? '创建完整转发任务' : '创建转发'}</Button>
               </ModalFooter>
             </>
           )}

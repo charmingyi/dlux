@@ -1,6 +1,7 @@
 package com.admin.service;
 
 import com.admin.common.dto.ForwardDto;
+import com.admin.common.dto.ForwardPlanDto;
 import com.admin.common.dto.ForwardUpdateDto;
 import com.admin.common.lang.R;
 import com.admin.entity.Forward;
@@ -17,6 +18,9 @@ import java.util.Map;
 public interface ForwardService extends IService<Forward> {
 
     R createForward(ForwardDto forwardDto);
+
+    /** 一次性创建线路、负载均衡组和转发任务。 */
+    R createForwardPlan(ForwardPlanDto planDto);
 
     R getAllForwards();
 

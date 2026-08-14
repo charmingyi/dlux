@@ -1,9 +1,13 @@
 package com.admin.service.impl;
 
 import com.admin.common.dto.ForwardDto;
+import com.admin.common.dto.ForwardPlanDto;
+import com.admin.common.dto.ForwardPlanRouteDto;
 import com.admin.common.dto.ForwardUpdateDto;
 import com.admin.common.dto.ForwardWithGroupDto;
 import com.admin.common.dto.GostDto;
+import com.admin.common.dto.GroupDto;
+import com.admin.common.dto.LinkDto;
 import com.admin.common.lang.R;
 import com.admin.common.utils.GostUtil;
 import com.admin.common.utils.LatencyCache;
@@ -104,12 +108,103 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         // 5. 下发配置
         R deployResult = deployForward(forward);
         if (deployResult.getCode() != 0) {
+            try {
+                GostUtil.DeleteService(entryNode.getId(), buildServiceName(forward.getId()));
+            } catch (Exception e) {
+                log.warn("清理创建失败的入口服务失败 forward={}: {}", forward.getId(), e.getMessage());
+            }
             this.removeById(forward.getId());
             return deployResult;
         }
 
         pushProbes(forward);
-        return R.ok();
+        return R.ok(forward.getId());
+    }
+
+    @Override
+    public R createForwardPlan(ForwardPlanDto planDto) {
+        if (planDto.getRoutes() == null || planDto.getRoutes().isEmpty()) {
+            return R.err("至少需要一条线路");
+        }
+
+        List<Long> createdLinkIds = new ArrayList<>();
+        Long createdGroupId = null;
+        try {
+            int routeIndex = 1;
+            List<Integer> weights = new ArrayList<>();
+            for (ForwardPlanRouteDto route : planDto.getRoutes()) {
+                if (route.getExitNodeId() == null) {
+                    rollbackForwardPlan(createdGroupId, createdLinkIds);
+                    return R.err("第 " + routeIndex + " 条线路缺少出口节点");
+                }
+
+                LinkDto linkDto = new LinkDto();
+                linkDto.setName(route.getName() == null || route.getName().trim().isEmpty()
+                        ? planDto.getName() + " · 线路" + routeIndex : route.getName().trim());
+                linkDto.setEntryNodeId(planDto.getEntryNodeId());
+                linkDto.setExitNodeId(route.getExitNodeId());
+                linkDto.setHopNodeIds(route.getHopNodeIds() == null ? new ArrayList<>() : route.getHopNodeIds());
+                linkDto.setTransport("wg");
+                linkDto.setWgNetworkId(planDto.getWgNetworkId());
+
+                R linkResult = linkService.createLink(linkDto);
+                if (linkResult.getCode() != 0) {
+                    rollbackForwardPlan(createdGroupId, createdLinkIds);
+                    return R.err("第 " + routeIndex + " 条线路创建失败: " + linkResult.getMsg());
+                }
+                Long linkId = resultId(linkResult);
+                if (linkId == null) {
+                    rollbackForwardPlan(createdGroupId, createdLinkIds);
+                    return R.err("线路创建成功但未返回ID，请升级后端后重试");
+                }
+                createdLinkIds.add(linkId);
+                weights.add(route.getWeight() == null || route.getWeight() < 1 ? 1 : route.getWeight());
+                routeIndex++;
+            }
+
+            GroupDto groupDto = new GroupDto();
+            groupDto.setName(planDto.getName() + " · 路由组");
+            groupDto.setStrategy(planDto.getGroupStrategy() == null ? "fifo" : planDto.getGroupStrategy());
+            groupDto.setMaxFails(planDto.getMaxFails() == null ? 1 : planDto.getMaxFails());
+            groupDto.setFailTimeout(planDto.getFailTimeout() == null ? "30s" : planDto.getFailTimeout());
+            groupDto.setLinkIds(createdLinkIds.stream().map(Long::intValue).collect(java.util.stream.Collectors.toList()));
+            groupDto.setWeights(weights);
+
+            R groupResult = lbGroupService.createGroup(groupDto);
+            if (groupResult.getCode() != 0) {
+                rollbackForwardPlan(null, createdLinkIds);
+                return R.err("路由组创建失败: " + groupResult.getMsg());
+            }
+            createdGroupId = resultId(groupResult);
+            if (createdGroupId == null) {
+                rollbackForwardPlan(null, createdLinkIds);
+                return R.err("路由组创建成功但未返回ID，请升级后端后重试");
+            }
+
+            ForwardDto forwardDto = new ForwardDto();
+            forwardDto.setName(planDto.getName());
+            forwardDto.setGroupId(createdGroupId.intValue());
+            forwardDto.setRemoteAddr(planDto.getRemoteAddr());
+            forwardDto.setTargetStrategy(planDto.getTargetStrategy() == null ? "fifo" : planDto.getTargetStrategy());
+            forwardDto.setSpeedId(planDto.getSpeedId());
+            forwardDto.setInPort(planDto.getInPort());
+
+            R forwardResult = createForward(forwardDto);
+            if (forwardResult.getCode() != 0) {
+                rollbackForwardPlan(createdGroupId, createdLinkIds);
+                return R.err("转发下发失败: " + forwardResult.getMsg());
+            }
+
+            Map<String, Object> result = new HashMap<>();
+            result.put("forwardId", resultId(forwardResult));
+            result.put("groupId", createdGroupId);
+            result.put("linkIds", createdLinkIds);
+            return R.ok(result);
+        } catch (Exception e) {
+            rollbackForwardPlan(createdGroupId, createdLinkIds);
+            log.error("一体化创建转发失败", e);
+            return R.err("创建失败: " + e.getMessage());
+        }
     }
 
     @Override
@@ -487,6 +582,34 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
     }
 
     // ==================== 内部方法 ====================
+
+    private Long resultId(R result) {
+        if (result == null || result.getData() == null) return null;
+        try {
+            return Long.valueOf(result.getData().toString());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private void rollbackForwardPlan(Long groupId, List<Long> linkIds) {
+        if (groupId != null) {
+            try {
+                lbGroupService.deleteGroup(groupId);
+            } catch (Exception e) {
+                log.warn("回滚路由组失败 group={}: {}", groupId, e.getMessage());
+            }
+        }
+        List<Long> reverse = new ArrayList<>(linkIds);
+        Collections.reverse(reverse);
+        for (Long linkId : reverse) {
+            try {
+                linkService.deleteLink(linkId);
+            } catch (Exception e) {
+                log.warn("回滚线路失败 link={}: {}", linkId, e.getMessage());
+            }
+        }
+    }
 
     private R changeForwardStatus(Long id, int targetStatus, String operation) {
         Forward forward = this.getById(id);

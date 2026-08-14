@@ -102,7 +102,6 @@ type WebSocketReporter struct {
 	connecting     bool              // 新增：正在连接状态
 	connMutex      sync.Mutex        // 新增：连接状态锁
 	aesCrypto      *crypto.AESCrypto // 新增：AES加密器
-	lastWgPublicKeys sync.Map        // 组网名 -> 最近一次应用时返回的公钥
 }
 
 // NewWebSocketReporter 创建一个新的WebSocket报告器
@@ -562,20 +561,21 @@ func (w *WebSocketReporter) routeCommand(cmd CommandMessage) {
 		response.Type = "UpdateProbesResponse"
 
 	// WireGuard 组网
+	case "WgPrepare":
+		var prepareResult *WgApplyResponse
+		prepareResult, err = w.handleWgPrepare(cmd.Data)
+		response.Type = "WgPrepareResponse"
+		response.Data = prepareResult
 	case "WgApply":
-		err = w.handleWgApply(cmd.Data)
+		var applyResult *WgApplyResponse
+		applyResult, err = w.handleWgApply(cmd.Data)
 		response.Type = "WgApplyResponse"
-		if err == nil {
-			// 将生成的公钥回传给面板
-			if name := wgApplyName(cmd.Data); name != "" {
-				if pk := w.GetWgPublicKey(name); pk != "" {
-					response.Data = map[string]interface{}{
-						"publicKey": pk,
-						"interface": ifaceName(name),
-					}
-				}
-			}
-		}
+		response.Data = applyResult
+	case "WgStatus":
+		var statusResult *WgStatusResponse
+		statusResult, err = w.handleWgStatus(cmd.Data)
+		response.Type = "WgStatusResponse"
+		response.Data = statusResult
 	case "WgRemove":
 		err = w.handleWgRemove(cmd.Data)
 		response.Type = "WgRemoveResponse"
@@ -1117,44 +1117,44 @@ func (w *WebSocketReporter) handleUpdateProbes(data interface{}) error {
 	return nil
 }
 
-// handleWgApply 应用WireGuard组网配置
-func (w *WebSocketReporter) handleWgApply(data interface{}) error {
+// handleWgPrepare 只生成或读取密钥，不触碰正在运行的接口。
+func (w *WebSocketReporter) handleWgPrepare(data interface{}) (*WgApplyResponse, error) {
 	jsonData, err := json.Marshal(data)
 	if err != nil {
-		return fmt.Errorf("序列化组网配置失败: %v", err)
+		return nil, fmt.Errorf("序列化组网准备请求失败: %v", err)
 	}
 
-	var req WgApplyRequest
+	var req WgPrepareRequest
 	if err := json.Unmarshal(jsonData, &req); err != nil {
-		return fmt.Errorf("解析组网配置失败: %v", err)
+		return nil, fmt.Errorf("解析组网准备请求失败: %v", err)
 	}
-
-	resp, err := applyWireGuard(&req)
-	if err != nil {
-		return err
-	}
-
-	// 将公钥返回给面板
-	w.lastWgPublicKeys.Store(req.Name, resp.PublicKey)
-	return nil
+	return prepareWireGuard(&req)
 }
 
-// wgApplyName 从命令数据中提取组网名称
-func wgApplyName(data interface{}) string {
-	if m, ok := data.(map[string]interface{}); ok {
-		if name, ok := m["name"].(string); ok {
-			return name
-		}
-	}
+// handleWgApply 应用WireGuard组网配置
+func (w *WebSocketReporter) handleWgApply(data interface{}) (*WgApplyResponse, error) {
 	jsonData, err := json.Marshal(data)
 	if err != nil {
-		return ""
+		return nil, fmt.Errorf("序列化组网配置失败: %v", err)
 	}
+
 	var req WgApplyRequest
 	if err := json.Unmarshal(jsonData, &req); err != nil {
-		return ""
+		return nil, fmt.Errorf("解析组网配置失败: %v", err)
 	}
-	return req.Name
+	return applyWireGuard(&req)
+}
+
+func (w *WebSocketReporter) handleWgStatus(data interface{}) (*WgStatusResponse, error) {
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("序列化组网状态请求失败: %v", err)
+	}
+	var req WgStatusRequest
+	if err := json.Unmarshal(jsonData, &req); err != nil {
+		return nil, fmt.Errorf("解析组网状态请求失败: %v", err)
+	}
+	return wireGuardStatus(&req)
 }
 
 // handlePingIps 处理组网内ICMP延迟探测
@@ -1175,7 +1175,7 @@ func (w *WebSocketReporter) handlePingIps(data interface{}) ([]PingIpsResult, er
 // handleUpdateAgent 节点在线自更新: 下载最新release二进制并替换重启
 func (w *WebSocketReporter) handleUpdateAgent(data interface{}) error {
 	repoURL := "https://github.com/charmingyi/dlux"
-	version := "1.0.0"
+	version := "1.1.0"
 
 	arch := runtime.GOARCH
 	if arch == "x86_64" || arch == "amd64" {
@@ -1244,7 +1244,6 @@ func (w *WebSocketReporter) handleWgRemove(data interface{}) error {
 		return fmt.Errorf("解析移除请求失败: %v", err)
 	}
 
-	w.lastWgPublicKeys.Delete(req.Name)
 	return removeWireGuard(&req)
 }
 
@@ -1262,16 +1261,6 @@ func (w *WebSocketReporter) SendProbes(results []ProbeResult) {
 		return
 	}
 	w.sendRaw(jsonData)
-}
-
-// GetWgPublicKey 获取最近一次应用组网时返回的公钥
-func (w *WebSocketReporter) GetWgPublicKey(name string) string {
-	if v, ok := w.lastWgPublicKeys.Load(name); ok {
-		if s, ok := v.(string); ok {
-			return s
-		}
-	}
-	return ""
 }
 
 // sendRaw 直接发送原始JSON数据(不包含命令响应结构)

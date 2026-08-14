@@ -207,8 +207,22 @@ public class GostUtil {
 
     // ==================== WireGuard 组网 ====================
 
+    /** 只准备节点密钥，不修改正在运行的 WireGuard 接口。 */
+    public static GostDto WgPrepare(Long node_id, String name) {
+        JSONObject req = new JSONObject();
+        req.put("name", name);
+        return WebSocketServer.send_msg(node_id, req, "WgPrepare");
+    }
+
     public static GostDto WgApply(Long node_id, JSONObject req) {
         return WebSocketServer.send_msg(node_id, req, "WgApply");
+    }
+
+    /** 查询节点侧真实接口、peer、握手和流量状态。 */
+    public static GostDto WgStatus(Long node_id, String name) {
+        JSONObject req = new JSONObject();
+        req.put("name", name);
+        return WebSocketServer.send_msg(node_id, req, "WgStatus");
     }
 
     public static GostDto WgRemove(Long node_id, String name) {

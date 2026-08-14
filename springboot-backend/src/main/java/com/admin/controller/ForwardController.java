@@ -3,6 +3,7 @@ package com.admin.controller;
 import com.admin.common.aop.LogAnnotation;
 import com.admin.common.annotation.RequireRole;
 import com.admin.common.dto.ForwardDto;
+import com.admin.common.dto.ForwardPlanDto;
 import com.admin.common.dto.ForwardUpdateDto;
 import com.admin.common.lang.R;
 import com.admin.service.ForwardService;
@@ -32,6 +33,12 @@ public class ForwardController extends BaseController {
     @PostMapping("/create")
     public R create(@Validated @RequestBody ForwardDto forwardDto) {
         return forwardService.createForward(forwardDto);
+    }
+
+    @LogAnnotation
+    @PostMapping("/create-plan")
+    public R createPlan(@Validated @RequestBody ForwardPlanDto planDto) {
+        return forwardService.createForwardPlan(planDto);
     }
 
     @LogAnnotation

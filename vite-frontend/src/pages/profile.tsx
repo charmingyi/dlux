@@ -59,36 +59,36 @@ export default function ProfilePage() {
   const adminMenuItems: MenuItem[] = [
     {
       path: '/wg',
-      label: '组网管理',
+      label: 'WG 组网工作台',
       icon: (
         <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
           <path fillRule="evenodd" d="M3 6a3 3 0 013-3h2a3 3 0 013 3v1h-2V6a1 1 0 00-1-1H6a1 1 0 00-1 1v8a1 1 0 001 1h2a1 1 0 001-1v-1h2v1a3 3 0 01-3 3H6a3 3 0 01-3-3V6zm10 0a3 3 0 013-3h1a3 3 0 013 3v8a3 3 0 01-3 3h-1a3 3 0 01-3-3v-1h2v1a1 1 0 001 1h1a1 1 0 001-1V6a1 1 0 00-1-1h-1a1 1 0 00-1 1v1h-2V6z" clipRule="evenodd" />
         </svg>
       ),
       color: 'bg-green-100 dark:bg-green-500/20 text-green-600 dark:text-green-400',
-      description: '节点组网管理'
+      description: '握手、路由、流量与延迟'
     },
     {
       path: '/link',
-      label: '线路管理',
+      label: '高级线路',
       icon: (
         <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
           <path fillRule="evenodd" d="M12.586 4.586a2 2 0 112.828 2.828l-3 3a2 2 0 01-2.828 0 1 1 0 00-1.414 1.414 4 4 0 005.656 0l3-3a4 4 0 00-5.656-5.656l-1.5 1.5a1 1 0 101.414 1.414l1.5-1.5zm-5 5a2 2 0 012.828 0 1 1 0 101.414-1.414 4 4 0 00-5.656 0l-3 3a4 4 0 105.656 5.656l1.5-1.5a1 1 0 10-1.414-1.414l-1.5 1.5a2 2 0 11-2.828-2.828l3-3z" clipRule="evenodd" />
         </svg>
       ),
       color: 'bg-cyan-100 dark:bg-cyan-500/20 text-cyan-600 dark:text-cyan-400',
-      description: '多跳线路管理'
+      description: '手工编排与维护多跳线路'
     },
     {
       path: '/group',
-      label: '负载均衡',
+      label: '高级路由组',
       icon: (
         <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
           <path d="M5 4a1 1 0 00-2 0v7.268a2 2 0 101.732 3.732H8.5a2.5 2.5 0 002.5-2.5V8.5a1.5 1.5 0 013 0v7.268a2 2 0 101.732 3.732H17a1 1 0 100-2h-1.268a2 2 0 00-.732-.732V8.5a3.5 3.5 0 00-3.5-3.5H8.5a1 1 0 00-1 1v5.732a2 2 0 01-2 2H4.268A2 2 0 005 14.268V4z" />
         </svg>
       ),
       color: 'bg-red-100 dark:bg-red-500/20 text-red-600 dark:text-red-400',
-      description: '多线路负载均衡'
+      description: '手工组合线路与负载策略'
     },
     {
       path: '/limit',

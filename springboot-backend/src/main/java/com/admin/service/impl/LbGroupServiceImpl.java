@@ -79,7 +79,7 @@ public class LbGroupServiceImpl extends ServiceImpl<LbGroupMapper, LbGroup> impl
         }
 
         saveGroupLinks(group.getId(), groupDto);
-        return R.ok();
+        return R.ok(group.getId());
     }
 
     @Override

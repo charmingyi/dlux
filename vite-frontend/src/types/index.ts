@@ -47,6 +47,47 @@ export interface WgNetwork {
   members: WgMember[];
 }
 
+export interface WgPeerRuntime {
+  publicKey: string;
+  endpoint: string;
+  allowedIps: string[];
+  latestHandshake: number;
+  rxBytes: number;
+  txBytes: number;
+  persistentKeepalive: number;
+}
+
+export interface WgInterfaceRuntime {
+  interface: string;
+  exists: boolean;
+  up: boolean;
+  publicKey: string;
+  listenPort: number;
+  mtu: number;
+  addresses: string[];
+  peers: WgPeerRuntime[];
+}
+
+export interface WgMemberRuntime {
+  memberId: number;
+  nodeId: number;
+  nodeName: string;
+  overlayIp: string;
+  hub: boolean;
+  nodeOnline: boolean;
+  ok: boolean;
+  error?: string;
+  runtime?: WgInterfaceRuntime;
+}
+
+export interface WgNetworkRuntime {
+  networkId: number;
+  mode: 'mesh' | 'hub';
+  expectedMembers: number;
+  timestamp: number;
+  members: WgMemberRuntime[];
+}
+
 // 线路
 export interface LinkItem {
   id: number;

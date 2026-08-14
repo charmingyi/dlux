@@ -23,4 +23,7 @@ public interface WgNetworkService extends IService<WgNetwork> {
     /** 应用/同步组网到所有成员节点(两阶段: 先取公钥, 再下发完整对端配置) */
     R syncNetwork(Long id);
 
+    /** 查询所有成员节点上的真实 WireGuard 运行状态。 */
+    R getNetworkStatus(Long id);
+
 }
