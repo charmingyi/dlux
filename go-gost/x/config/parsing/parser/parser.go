@@ -10,6 +10,7 @@ import (
 	"github.com/go-gost/x/config/cmd"
 	xmd "github.com/go-gost/x/metadata"
 	mdutil "github.com/go-gost/x/metadata/util"
+	"github.com/spf13/viper"
 )
 
 var (
@@ -65,7 +66,10 @@ func (p *parser) Parse() (*config.Config, error) {
 
 	if len(cfg.Services) == 0 && p.args.ApiAddr == "" && cfg.API == nil {
 		if err := cfg.Load(); err != nil {
-			return nil, err
+			// 本地状态文件不存在时忽略(首次启动/无持久化配置, 运行时由节点自动生成)
+			if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+				return nil, err
+			}
 		}
 	}
 

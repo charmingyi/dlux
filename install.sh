@@ -146,6 +146,11 @@ cat > "$INSTALL_DIR/agent.json" <<EOF
 }
 EOF
 
+# 初始化状态文件 (运行时自动更新)
+if [[ ! -f "$INSTALL_DIR/state.json" ]]; then
+  echo '{}' > "$INSTALL_DIR/state.json"
+fi
+
 # systemd 托管
 cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
 [Unit]
