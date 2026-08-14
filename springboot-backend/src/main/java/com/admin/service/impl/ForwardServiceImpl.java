@@ -510,9 +510,9 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
 
         GostDto gostResult;
         if (targetStatus == FORWARD_STATUS_PAUSED) {
-            gostResult = GostUtil.PauseService(entry.getId(), buildServiceName(id));
+            gostResult = GostUtil.PauseService(entryNode.getId(), buildServiceName(id));
         } else {
-            gostResult = GostUtil.ResumeService(entry.getId(), buildServiceName(id));
+            gostResult = GostUtil.ResumeService(entryNode.getId(), buildServiceName(id));
         }
 
         if (!isGostOperationSuccess(gostResult)) {
