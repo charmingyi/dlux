@@ -221,7 +221,7 @@ public class WgNetworkServiceImpl extends ServiceImpl<WgNetworkMapper, WgNetwork
                     prepared.add(member.getNodeId());
                     continue;
                 }
-                // 首次加入的旧节点仍需通过 WgApply 生成密钥；升级 1.1.1 后将完全无中断。
+                // 首次加入的旧节点仍需通过 WgApply 生成密钥；升级 1.1.2 后将完全无中断。
                 result = GostUtil.WgApply(node.getId(), buildBaseRequest(network, member));
             }
             if (isGostOperationSuccess(result) && result.getData() != null) {
@@ -259,8 +259,19 @@ public class WgNetworkServiceImpl extends ServiceImpl<WgNetworkMapper, WgNetwork
 				errors.add(node.getName() + ": " + message);
 			} else {
 				applied.add(member.getNodeId());
-            }
+			}
         }
+
+		// WireGuard 在首次下发 peer、切换端点或穿过 NAT 时需要短暂完成握手。
+		// 立即 ICMP 会把“尚未握手”缓存成不可达，导致页面长期显示假阴性。
+		if (!applied.isEmpty() && members.size() > 1) {
+			try {
+				Thread.sleep(3000);
+			} catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+				return R.err("组网同步被中断，请重试");
+			}
+		}
 
         // 阶段3: 组网内ICMP延迟探测(节点互相ping组网IP)
         for (NodeWg member : members) {
@@ -351,7 +362,7 @@ public class WgNetworkServiceImpl extends ServiceImpl<WgNetworkMapper, WgNetwork
             } else {
                 item.put("ok", false);
                 if (isUnknownCommand(result)) {
-                    item.put("error", "节点版本过旧，请先在节点页升级到 1.1.1");
+                    item.put("error", "节点版本过旧，请先在节点页升级到 1.1.2");
                 } else {
                     item.put("error", result == null ? "节点无响应" : result.getMsg());
                 }

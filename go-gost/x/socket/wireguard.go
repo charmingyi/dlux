@@ -80,6 +80,7 @@ type wgLocalState struct {
 	PrivateKey  string `json:"privateKey"`
 	PublicKey   string `json:"publicKey"`
 	AppliedHash string `json:"appliedHash"`
+	ListenPort  int    `json:"listenPort,omitempty"`
 }
 
 var (
@@ -228,8 +229,19 @@ func applyWireGuard(req *WgApplyRequest) (*WgApplyResponse, error) {
 	}
 
 	hash := applyHash(req)
-	if state.AppliedHash == hash && ifaceExists && !req.Forwarding {
-		// 配置未变化, 直接返回
+	if state.AppliedHash == hash && ifaceExists {
+		// 配置未变化时只校验内核参数和防火墙。Hub 端不能重复删除并重建
+		// endpoint 为空的 peer，否则会清掉 WireGuard 动态学习到的 NAT 端点。
+		if err := configureWireGuardForwarding(iface, req.Forwarding); err != nil {
+			return nil, err
+		}
+		if err := configureWireGuardInput(iface, state.ListenPort, req.ListenPort); err != nil {
+			return nil, err
+		}
+		if state.ListenPort != req.ListenPort {
+			state.ListenPort = req.ListenPort
+			saveState(req.Name, state)
+		}
 		return &WgApplyResponse{
 			PublicKey: state.PublicKey,
 			Interface: iface,
@@ -353,8 +365,12 @@ func applyWireGuard(req *WgApplyRequest) (*WgApplyResponse, error) {
 	if err := configureWireGuardForwarding(iface, req.Forwarding); err != nil {
 		return nil, err
 	}
+	if err := configureWireGuardInput(iface, state.ListenPort, req.ListenPort); err != nil {
+		return nil, err
+	}
 
 	state.AppliedHash = hash
+	state.ListenPort = req.ListenPort
 	saveState(req.Name, state)
 	return &WgApplyResponse{
 		PublicKey: state.PublicKey,
@@ -390,6 +406,41 @@ func configureWireGuardForwarding(iface string, enabled bool) error {
 		}
 	}
 	return nil
+}
+
+// configureWireGuardInput 放行面板管理的 WireGuard UDP 监听端口。
+// IPv4 规则失败会阻止应用配置；IPv6 规则为兼容性补充，在内核未启用 IPv6 时忽略失败。
+func configureWireGuardInput(iface string, oldPort, newPort int) error {
+	if _, err := exec.LookPath("iptables"); err == nil {
+		if err := updateWireGuardInputRule("iptables", iface, oldPort, newPort); err != nil {
+			return fmt.Errorf("配置WireGuard IPv4入站规则失败: %v", err)
+		}
+	}
+	if _, err := exec.LookPath("ip6tables"); err == nil {
+		_ = updateWireGuardInputRule("ip6tables", iface, oldPort, newPort)
+	}
+	return nil
+}
+
+func updateWireGuardInputRule(command, iface string, oldPort, newPort int) error {
+	comment := "relay-panel-" + iface
+	rule := func(port int) []string {
+		return []string{"INPUT", "-p", "udp", "--dport", strconv.Itoa(port),
+			"-m", "comment", "--comment", comment, "-j", "ACCEPT"}
+	}
+
+	if oldPort > 0 && oldPort != newPort {
+		_, _ = runCmd(command, append([]string{"-w", "5", "-D"}, rule(oldPort)...)...)
+	}
+	if newPort <= 0 {
+		return nil
+	}
+	current := rule(newPort)
+	if _, err := runCmd(command, append([]string{"-w", "5", "-C"}, current...)...); err == nil {
+		return nil
+	}
+	_, err := runCmd(command, append([]string{"-w", "5", "-I"}, current...)...)
+	return err
 }
 
 func wireGuardStatus(req *WgStatusRequest) (*WgStatusResponse, error) {
@@ -478,6 +529,12 @@ func removeWireGuard(req *WgRemoveRequest) error {
 	}
 	iface := ifaceName(req.Name)
 	_ = configureWireGuardForwarding(iface, false)
+	if b, err := os.ReadFile(stateFilePath(req.Name)); err == nil {
+		var state wgLocalState
+		if json.Unmarshal(b, &state) == nil {
+			_ = configureWireGuardInput(iface, state.ListenPort, 0)
+		}
+	}
 	if _, err := runCmd("ip", "link", "del", iface); err != nil {
 		// 接口不存在视为成功
 		if strings.Contains(err.Error(), "Cannot find device") || strings.Contains(err.Error(), "does not exist") {

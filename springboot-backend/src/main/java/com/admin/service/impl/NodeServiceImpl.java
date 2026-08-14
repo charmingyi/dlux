@@ -179,10 +179,10 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
             return R.err("节点不在线, 无法在线更新");
         }
         String version = node.getVersion();
-        if (version == null || version.compareTo("1.1.1") < 0) {
+        if (version == null || version.compareTo("1.1.2") < 0) {
             String cmd = "cd /opt/relay && ARCH=$(uname -m); " +
                     "if [ \"$ARCH\" = \"x86_64\" ]; then ARCH=amd64; else ARCH=arm64; fi; " +
-                    "curl -fL -o relay.new https://github.com/charmingyi/dlux/releases/download/1.1.1/relay-$ARCH && " +
+                    "curl -fL -o relay.new https://github.com/charmingyi/dlux/releases/download/1.1.2/relay-$ARCH && " +
                     "chmod +x relay.new && mv relay.new relay && systemctl restart relay";
             return R.err("节点版本过旧(" + (version == null ? "未知" : version) + "), 需SSH一次性升级:\n" + cmd);
         }

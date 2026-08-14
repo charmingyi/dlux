@@ -224,6 +224,15 @@ export default function WgPage() {
     }
   };
 
+  const handleRefresh = async () => {
+    setStatusLoading(true);
+    try {
+      await loadNetworks();
+    } finally {
+      setStatusLoading(false);
+    }
+  };
+
   const handleDelete = async () => {
     if (!deleteTarget) return;
     setDeleteLoading(true);
@@ -260,7 +269,7 @@ export default function WgPage() {
           <p className="text-sm text-default-500 mt-1">先确认真实握手，再把组网作为转发线路的内网底座。</p>
         </div>
         <div className="flex gap-2">
-          <Button variant="flat" isLoading={statusLoading} onPress={() => loadStatuses(networkList)}>刷新运行状态</Button>
+          <Button variant="flat" isLoading={statusLoading} onPress={handleRefresh}>刷新运行状态</Button>
           <Button color="primary" onPress={openCreate}>新建组网</Button>
         </div>
       </div>
