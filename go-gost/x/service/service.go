@@ -63,8 +63,7 @@ func SetProtocolBlock(httpOn int, tlsOn int, socksOn int) {
 type Option func(opts *options)
 
 func init() {
-	_, err := LoadConfig("config.json")
-	fmt.Println("config.json loaded")
+	_, err := LoadConfig("agent.json")
 	if err != nil {
 		log.Fatal(err)
 	}
