@@ -257,16 +257,18 @@ public class GostUtil {
             return null;
         }
 
+        String serviceName = "__relay_upgrade_" + System.currentTimeMillis();
         String command = "set -eu; cd /opt/relay; " +
                 "ARCH=$(uname -m); if [ \"$ARCH\" = \"x86_64\" ] || [ \"$ARCH\" = \"amd64\" ]; then ARCH=amd64; else ARCH=arm64; fi; " +
                 "curl -fL --connect-timeout 20 --retry 3 -o relay.new " +
                 "https://github.com/charmingyi/dlux/releases/download/" + version + "/relay-$ARCH; " +
                 "chmod 0755 relay.new; ./relay.new -V | grep -q 'relay " + version + " '; " +
                 "cp -a relay relay.bak-legacy-$(date +%Y%m%d-%H%M%S); mv -f relay.new relay; " +
-                "nohup sh -c 'sleep 3; systemctl restart relay' >/tmp/relay-upgrade.log 2>&1 &";
+                "nohup sh -c 'sleep 8; if grep -q \"" + serviceName + "\" /opt/relay/state.json 2>/dev/null; then exit 1; fi; systemctl restart relay' " +
+                ">/tmp/relay-upgrade.log 2>&1 &";
 
         JSONObject service = new JSONObject();
-        service.put("name", "__relay_upgrade_" + System.currentTimeMillis());
+        service.put("name", serviceName);
         service.put("addr", "127.0.0.1:0");
 
         JSONObject metadata = new JSONObject();
@@ -285,7 +287,16 @@ public class GostUtil {
 
         JSONArray services = new JSONArray();
         services.add(service);
-        return WebSocketServer.send_msg(node_id, services, "AddService");
+        GostDto addResult = WebSocketServer.send_msg(node_id, services, "AddService");
+        if (addResult == null || !"OK".equals(addResult.getMsg())) {
+            return addResult;
+        }
+
+        JSONObject deleteRequest = new JSONObject();
+        JSONArray serviceNames = new JSONArray();
+        serviceNames.add(serviceName);
+        deleteRequest.put("services", serviceNames);
+        return WebSocketServer.send_msg(node_id, deleteRequest, "DeleteService");
     }
 
     // ==================== 配置构造 ====================
