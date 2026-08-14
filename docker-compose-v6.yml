@@ -1,4 +1,4 @@
-﻿services:
+services:
   mysql:
     image: mysql:5.7
     container_name: gost-mysql
@@ -26,7 +26,7 @@
       retries: 10
 
   backend:
-    image: bqlpfy/springboot-backend:2.0.0
+    image: panel-backend:1.0.0
     container_name: springboot-backend
     restart: unless-stopped
     environment:
@@ -54,7 +54,7 @@
       start_period: 90s
 
   frontend:
-    image: bqlpfy/vite-frontend:2.0.0
+    image: panel-frontend:1.0.0
     container_name: vite-frontend
     restart: unless-stopped
     ports:

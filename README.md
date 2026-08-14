@@ -1,6 +1,6 @@
-﻿# dlux — 组网转发面板 v2
+﻿# dlux — 组网转发面板 v1
 
-基于 flux-panel 二次开发的重构版本，聚焦 **WireGuard 组网 + 多链路 + 负载均衡**，去除多用户模型，并对转发特征进行了弱化处理。
+第一版重构：聚焦 **WireGuard 组网 + 多链路 + 负载均衡**，去除多用户模型，并对转发特征进行了弱化处理。
 
 ## 功能特性
 
@@ -110,7 +110,7 @@ npm run build
 推送到 `main` 分支后，GitHub Actions 自动：
 1. 编译节点代理二进制（amd64/arm64）并上传到 Release
 2. 可选推送 Docker 镜像（需配置 `DOCKER_HUB_USERNAME` / `DOCKER_HUB_TOKEN` secrets，未配置不影响 Release 发布）
-3. 创建 tag `v2.0.0` 与 Release，上传安装脚本 / docker-compose / panel.sql
+3. 创建 tag `1.0.0` 与 Release，上传安装脚本 / docker-compose / panel.sql
 
 ## 免责声明
 
