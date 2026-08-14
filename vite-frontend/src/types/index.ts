@@ -55,7 +55,10 @@ export interface LinkItem {
   transport: 'wg' | 'tls' | 'tcp';
   entryNodeId: number;
   entryNodeName?: string;
+  /** 入口节点在线状态 */
   entryNodeStatus?: number;
+  /** 入口节点在该组网内的IP */
+  entryWgIp?: string;
   exitNodeId: number;
   exitNodeName?: string;
   exitNodeStatus?: number;

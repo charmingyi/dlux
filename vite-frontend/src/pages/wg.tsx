@@ -17,7 +17,7 @@ import {
   syncWgNetwork,
   getNodeList
 } from "@/api";
-import type { WgNetwork, WgMember } from "@/types";
+import type { WgNetwork } from "@/types";
 
 interface NodeOption {
   id: number;

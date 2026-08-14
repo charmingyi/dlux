@@ -128,7 +128,7 @@ export default function GroupPage() {
         maxFails: form.maxFails,
         failTimeout: form.failTimeout,
         linkIds: form.linkIds,
-        weights: form.linkIds.map((id, i) => form.weights[i] || 1)
+        weights: form.linkIds.map((_, i) => form.weights[i] || 1)
       };
       const res = isEdit ? await updateGroup({ id: form.id, ...payload }) : await createGroup(payload);
       if (res.code === 0) {
@@ -217,7 +217,7 @@ export default function GroupPage() {
                   )}
                 </div>
                 <div className="space-y-1">
-                  {group.links.map((link, i) => (
+                  {group.links.map((link) => (
                     <div key={link.linkId} className="flex items-center justify-between bg-default-100 dark:bg-default-50 rounded-lg px-3 py-1.5">
                       <span>{link.linkName}</span>
                       <div className="flex items-center gap-2 text-xs text-default-500">

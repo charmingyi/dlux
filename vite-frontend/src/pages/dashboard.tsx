@@ -91,8 +91,8 @@ export default function DashboardPage() {
               <LineChart data={overview?.statistics || []} margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#333" />
                 <XAxis dataKey="time" fontSize={11} />
-                <YAxis fontSize={11} tickFormatter={(v: number) => formatBytes(v)} width={70} />
-                <Tooltip formatter={(value: number) => [formatBytes(value), '流量']} labelFormatter={(label) => `时间: ${label}`} />
+                <YAxis fontSize={11} tickFormatter={(v) => formatBytes(Number(v) || 0)} width={70} />
+                <Tooltip formatter={(value) => [formatBytes(Number(value) || 0), '流量']} labelFormatter={(label) => `时间: ${label}`} />
                 <Line type="monotone" dataKey="flow" stroke="#3b82f6" strokeWidth={2} dot={false} />
               </LineChart>
             </ResponsiveContainer>
