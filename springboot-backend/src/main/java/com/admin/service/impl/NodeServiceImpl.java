@@ -37,6 +37,8 @@ import java.util.Objects;
 @Service
 public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements NodeService {
 
+    private static final String CURRENT_AGENT_VERSION = "1.1.3";
+
     private static final String SUCCESS_CREATE_MSG = "节点创建成功";
     private static final String SUCCESS_UPDATE_MSG = "节点更新成功";
     private static final String SUCCESS_DELETE_MSG = "节点删除成功";
@@ -179,14 +181,14 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
             return R.err("节点不在线, 无法在线更新");
         }
         String version = node.getVersion();
-        if (version == null || version.compareTo("1.1.2") < 0) {
-            String cmd = "cd /opt/relay && ARCH=$(uname -m); " +
-                    "if [ \"$ARCH\" = \"x86_64\" ]; then ARCH=amd64; else ARCH=arm64; fi; " +
-                    "curl -fL -o relay.new https://github.com/charmingyi/dlux/releases/download/1.1.2/relay-$ARCH && " +
-                    "chmod +x relay.new && mv relay.new relay && systemctl restart relay";
-            return R.err("节点版本过旧(" + (version == null ? "未知" : version) + "), 需SSH一次性升级:\n" + cmd);
+        if (version == null || version.compareTo(CURRENT_AGENT_VERSION) < 0) {
+            GostDto result = GostUtil.BootstrapLegacyAgent(node.getId(), CURRENT_AGENT_VERSION);
+            if (result == null || !"OK".equals(result.getMsg())) {
+                return R.err(result == null ? "旧版节点升级指令发送失败" : result.getMsg());
+            }
+            return R.ok("兼容升级指令已下发，节点将在下载完成后自动重启");
         }
-        GostDto result = GostUtil.UpdateAgent(node.getId());
+        GostDto result = GostUtil.UpdateAgent(node.getId(), CURRENT_AGENT_VERSION);
         if (result == null || !"OK".equals(result.getMsg())) {
             return R.err(result == null ? "节点无响应" : result.getMsg());
         }

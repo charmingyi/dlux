@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -1175,7 +1176,26 @@ func (w *WebSocketReporter) handlePingIps(data interface{}) ([]PingIpsResult, er
 // handleUpdateAgent 节点在线自更新: 下载最新release二进制并替换重启
 func (w *WebSocketReporter) handleUpdateAgent(data interface{}) error {
 	repoURL := "https://github.com/charmingyi/dlux"
-	version := "1.1.2"
+	version := "1.1.3"
+
+	var req struct {
+		Version string `json:"version"`
+	}
+	if data != nil {
+		jsonData, err := json.Marshal(data)
+		if err != nil {
+			return fmt.Errorf("序列化更新请求失败: %v", err)
+		}
+		if err := json.Unmarshal(jsonData, &req); err != nil {
+			return fmt.Errorf("解析更新请求失败: %v", err)
+		}
+	}
+	if req.Version != "" {
+		if !regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:[-.][0-9A-Za-z.-]+)?$`).MatchString(req.Version) {
+			return fmt.Errorf("非法目标版本: %s", req.Version)
+		}
+		version = req.Version
+	}
 
 	arch := runtime.GOARCH
 	if arch == "x86_64" || arch == "amd64" {

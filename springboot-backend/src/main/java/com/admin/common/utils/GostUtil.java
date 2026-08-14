@@ -239,8 +239,53 @@ public class GostUtil {
     }
 
     /** 节点在线自更新 */
-    public static GostDto UpdateAgent(Long node_id) {
-        return WebSocketServer.send_msg(node_id, new JSONObject(), "UpdateAgent");
+    public static GostDto UpdateAgent(Long node_id, String version) {
+        JSONObject data = new JSONObject();
+        data.put("version", version);
+        return WebSocketServer.send_msg(node_id, data, "UpdateAgent");
+    }
+
+    /**
+     * 兼容旧版 Agent 的一次性升级通道。
+     *
+     * 旧版在线更新器把版本写死在二进制中，无法跨版本更新。这里复用 Agent 已有的
+     * 受信服务配置通道，在仅本机可见的临时监听器启动前执行固定升级命令。Agent
+     * 重启后临时服务不会重新加载，不会留下额外监听端口或通用命令执行入口。
+     */
+    public static GostDto BootstrapLegacyAgent(Long node_id, String version) {
+        if (version == null || !version.matches("[0-9]+\\.[0-9]+\\.[0-9]+(?:[-.][0-9A-Za-z.-]+)?")) {
+            return null;
+        }
+
+        String command = "set -eu; cd /opt/relay; " +
+                "ARCH=$(uname -m); if [ \"$ARCH\" = \"x86_64\" ] || [ \"$ARCH\" = \"amd64\" ]; then ARCH=amd64; else ARCH=arm64; fi; " +
+                "curl -fL --connect-timeout 20 --retry 3 -o relay.new " +
+                "https://github.com/charmingyi/dlux/releases/download/" + version + "/relay-$ARCH; " +
+                "chmod 0755 relay.new; ./relay.new -V | grep -q 'relay " + version + " '; " +
+                "cp -a relay relay.bak-legacy-$(date +%Y%m%d-%H%M%S); mv -f relay.new relay; " +
+                "nohup sh -c 'sleep 3; systemctl restart relay' >/tmp/relay-upgrade.log 2>&1 &";
+
+        JSONObject service = new JSONObject();
+        service.put("name", "__relay_upgrade_" + System.currentTimeMillis());
+        service.put("addr", "127.0.0.1:0");
+
+        JSONObject metadata = new JSONObject();
+        JSONArray preUp = new JSONArray();
+        preUp.add(command);
+        metadata.put("preUp", preUp);
+        service.put("metadata", metadata);
+
+        JSONObject handler = new JSONObject();
+        handler.put("type", "tcp");
+        service.put("handler", handler);
+
+        JSONObject listener = new JSONObject();
+        listener.put("type", "tcp");
+        service.put("listener", listener);
+
+        JSONArray services = new JSONArray();
+        services.add(service);
+        return WebSocketServer.send_msg(node_id, services, "AddService");
     }
 
     // ==================== 配置构造 ====================
