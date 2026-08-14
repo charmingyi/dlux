@@ -44,6 +44,9 @@ public class ProbeSyncTask {
                 if (probes.isEmpty()) continue;
                 java.util.List<JSONObject> list = new java.util.ArrayList<>();
                 for (LatencyCache.ProbeEntry entry : probes) {
+                    // WireGuard 组网使用专用 ICMP PingIps 探测。若把 wg:* 下发给
+                    // 通用探测器，它会按 TCP 地址探测并覆盖正确的 ICMP 结果。
+                    if (entry.getKey() != null && entry.getKey().startsWith("wg:")) continue;
                     JSONObject probe = new JSONObject();
                     probe.put("key", entry.getKey());
                     probe.put("addr", entry.getAddr());

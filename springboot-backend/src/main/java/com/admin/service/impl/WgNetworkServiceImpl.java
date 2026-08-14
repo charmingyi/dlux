@@ -306,6 +306,7 @@ public class WgNetworkServiceImpl extends ServiceImpl<WgNetworkMapper, WgNetwork
                     log.warn("解析组网延迟失败 node={}: {}", node.getId(), e.getMessage());
                 }
             }
+            syncTcpProbesWithoutWireGuard(node);
         }
 
         Map<String, Object> summary = new HashMap<>();
@@ -377,6 +378,26 @@ public class WgNetworkServiceImpl extends ServiceImpl<WgNetworkMapper, WgNetwork
         status.put("members", runtimeMembers);
         status.put("timestamp", System.currentTimeMillis());
         return R.ok(status);
+    }
+
+    /**
+     * 通用链路探测器只支持 TCP 地址，不能接管 wg:* 的 ICMP 目标。每次组网同步后
+     * 重新下发非 WireGuard 探测项，同时清除旧版本误下发到 Agent 的 wg:* 项。
+     */
+    private void syncTcpProbesWithoutWireGuard(Node node) {
+        List<JSONObject> tcpProbes = new ArrayList<>();
+        for (LatencyCache.ProbeEntry entry : LatencyCache.getNodeProbes(node.getId())) {
+            if (entry.getKey() == null || entry.getAddr() == null || entry.getKey().startsWith("wg:")) continue;
+            JSONObject probe = new JSONObject();
+            probe.put("key", entry.getKey());
+            probe.put("addr", entry.getAddr());
+            tcpProbes.add(probe);
+        }
+        try {
+            GostUtil.UpdateProbes(node.getId(), tcpProbes);
+        } catch (Exception e) {
+            log.warn("清理组网TCP探测项失败 node={}: {}", node.getId(), e.getMessage());
+        }
     }
 
     // ==================== 内部方法 ====================
