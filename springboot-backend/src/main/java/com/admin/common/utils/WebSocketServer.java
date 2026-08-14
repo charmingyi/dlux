@@ -7,6 +7,7 @@ import com.admin.common.task.CheckGostConfigAsync;
 import com.admin.entity.Node;
 import com.admin.service.NodeService;
 import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;

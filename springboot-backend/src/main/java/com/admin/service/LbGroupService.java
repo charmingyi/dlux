@@ -24,6 +24,6 @@ public interface LbGroupService extends IService<LbGroup> {
     java.util.List<com.admin.entity.GroupLink> getGroupLinks(Long groupId);
 
     /** 组内入口节点(所有线路必须一致) */
-    Integer getGroupEntryNode(Long groupId);
+    Integer getGroupEntryNode(Integer groupId);
 
 }

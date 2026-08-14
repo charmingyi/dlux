@@ -337,7 +337,7 @@ public class WgNetworkServiceImpl extends ServiceImpl<WgNetworkMapper, WgNetwork
             return R.err(String.format(ERROR_NODE_OFFLINE, node.getName()));
         }
 
-        Long exists = nodeWgMapper.selectCount(new QueryWrapper<NodeWg>()
+        Integer exists = nodeWgMapper.selectCount(new QueryWrapper<NodeWg>()
                 .eq("wg_network_id", network.getId()).eq("node_id", nodeId));
         if (exists != null && exists > 0) {
             return R.err(ERROR_MEMBER_EXISTS);
@@ -377,7 +377,7 @@ public class WgNetworkServiceImpl extends ServiceImpl<WgNetworkMapper, WgNetwork
     }
 
     private void ensureHub(WgNetwork network) {
-        Long hubCount = nodeWgMapper.selectCount(new QueryWrapper<NodeWg>()
+        Integer hubCount = nodeWgMapper.selectCount(new QueryWrapper<NodeWg>()
                 .eq("wg_network_id", network.getId()).eq("hub", 1).eq("status", 1));
         if (hubCount == null || hubCount == 0) {
             NodeWg first = nodeWgMapper.selectOne(new QueryWrapper<NodeWg>()

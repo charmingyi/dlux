@@ -142,7 +142,7 @@ public class LbGroupServiceImpl extends ServiceImpl<LbGroupMapper, LbGroup> impl
             return R.err(ERROR_GROUP_NOT_FOUND);
         }
 
-        Long forwardCount = forwardMapper.selectCount(new QueryWrapper<com.admin.entity.Forward>().eq("group_id", id));
+        Integer forwardCount = forwardMapper.selectCount(new QueryWrapper<com.admin.entity.Forward>().eq("group_id", id));
         if (forwardCount != null && forwardCount > 0) {
             return R.err(ERROR_GROUP_IN_USE);
         }
@@ -159,8 +159,8 @@ public class LbGroupServiceImpl extends ServiceImpl<LbGroupMapper, LbGroup> impl
     }
 
     @Override
-    public Integer getGroupEntryNode(Long groupId) {
-        List<GroupLink> groupLinks = getGroupLinks(groupId);
+    public Integer getGroupEntryNode(Integer groupId) {
+        List<GroupLink> groupLinks = getGroupLinks(groupId.longValue());
         if (groupLinks.isEmpty()) return null;
         Link first = linkMapper.selectById(groupLinks.get(0).getLinkId());
         return first == null ? null : first.getEntryNodeId();

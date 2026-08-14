@@ -25,10 +25,9 @@ import java.util.*;
 
 /**
  * <p>
- * 端口转发服务实现类
- *
- * 模型: 转发 -> 负载均衡组 -> 线路(入口->...->出口)
- * 入口节点部署入口服务(chainGroup+forwarder), 出口/中间节点部署中继服务
+ * 绔彛杞彂鏈嶅姟瀹炵幇绫? *
+ * 妯″瀷: 杞彂 -> 璐熻浇鍧囪　缁?-> 绾胯矾(鍏ュ彛->...->鍑哄彛)
+ * 鍏ュ彛鑺傜偣閮ㄧ讲鍏ュ彛鏈嶅姟(chainGroup+forwarder), 鍑哄彛/涓棿鑺傜偣閮ㄧ讲涓户鏈嶅姟
  * </p>
  */
 @Slf4j
@@ -60,34 +59,34 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
 
     @Override
     public R createForward(ForwardDto forwardDto) {
-        // 1. 校验组与线路
+        // 1. 鏍￠獙缁勪笌绾胯矾
         LbGroup group = validateGroup(forwardDto.getGroupId());
         if (group == null) {
-            return R.err("负载均衡组不存在");
+            return R.err("璐熻浇鍧囪　缁勪笉瀛樺湪");
         }
 
         Integer entryNodeId = lbGroupService.getGroupEntryNode(forwardDto.getGroupId());
         Node entryNode = entryNodeId == null ? null : nodeService.getById(entryNodeId);
         if (entryNode == null) {
-            return R.err("组内线路不存在或入口节点无效");
+            return R.err("缁勫唴绾胯矾涓嶅瓨鍦ㄦ垨鍏ュ彛鑺傜偣鏃犳晥");
         }
         if (entryNode.getStatus() == null || entryNode.getStatus() != 1) {
-            return R.err("入口节点不在线");
+            return R.err("鍏ュ彛鑺傜偣涓嶅湪绾?);
         }
 
-        // 2. 校验目标策略
+        // 2. 鏍￠獙鐩爣绛栫暐
         String targetStrategy = forwardDto.getTargetStrategy();
         if (targetStrategy != null && !TARGET_STRATEGIES.contains(targetStrategy)) {
-            return R.err("无效的目标策略: " + targetStrategy);
+            return R.err("鏃犳晥鐨勭洰鏍囩瓥鐣? " + targetStrategy);
         }
 
-        // 3. 分配端口
+        // 3. 鍒嗛厤绔彛
         Integer inPort = allocateInPort(entryNode, forwardDto.getInPort());
         if (inPort == null) {
-            return R.err(forwardDto.getInPort() != null ? "端口已被占用或不在允许范围内" : "入口端口已满");
+            return R.err(forwardDto.getInPort() != null ? "绔彛宸茶鍗犵敤鎴栦笉鍦ㄥ厑璁歌寖鍥村唴" : "鍏ュ彛绔彛宸叉弧");
         }
 
-        // 4. 保存
+        // 4. 淇濆瓨
         Forward forward = new Forward();
         BeanUtils.copyProperties(forwardDto, forward);
         forward.setInPort(inPort);
@@ -98,10 +97,10 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         forward.setCreatedTime(now);
         forward.setUpdatedTime(now);
         if (!this.save(forward)) {
-            return R.err("端口转发创建失败");
+            return R.err("绔彛杞彂鍒涘缓澶辫触");
         }
 
-        // 5. 下发配置
+        // 5. 涓嬪彂閰嶇疆
         R deployResult = deployForward(forward);
         if (deployResult.getCode() != 0) {
             this.removeById(forward.getId());
@@ -117,8 +116,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         List<ForwardWithGroupDto> forwards = baseMapper.selectAllForwardsWithGroup();
         for (ForwardWithGroupDto dto : forwards) {
             dto.setTargetLatencies(new ArrayList<>());
-            // 各线路出口节点到目标的延迟
-            List<GroupLink> groupLinks = lbGroupService.getGroupLinks(dto.getGroupId() == null ? 0L : dto.getGroupId());
+            // 鍚勭嚎璺嚭鍙ｈ妭鐐瑰埌鐩爣鐨勫欢杩?            List<GroupLink> groupLinks = lbGroupService.getGroupLinks(dto.getGroupId() == null ? 0L : dto.getGroupId());
             for (GroupLink gl : groupLinks) {
                 Link link = linkMapper.selectById(gl.getLinkId());
                 if (link == null) continue;
@@ -147,7 +145,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
     public R updateForward(ForwardUpdateDto forwardUpdateDto) {
         Forward existForward = this.getById(forwardUpdateDto.getId());
         if (existForward == null) {
-            return R.err("转发不存在");
+            return R.err("杞彂涓嶅瓨鍦?);
         }
 
         Integer newGroupId = forwardUpdateDto.getGroupId() != null ? forwardUpdateDto.getGroupId() : existForward.getGroupId();
@@ -155,21 +153,21 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
 
         LbGroup group = validateGroup(newGroupId);
         if (group == null) {
-            return R.err("负载均衡组不存在");
+            return R.err("璐熻浇鍧囪　缁勪笉瀛樺湪");
         }
 
         if (forwardUpdateDto.getTargetStrategy() != null && !TARGET_STRATEGIES.contains(forwardUpdateDto.getTargetStrategy())) {
-            return R.err("无效的目标策略: " + forwardUpdateDto.getTargetStrategy());
+            return R.err("鏃犳晥鐨勭洰鏍囩瓥鐣? " + forwardUpdateDto.getTargetStrategy());
         }
 
         Integer oldEntryNodeId = existForward.getGroupId() == null ? null
-                : lbGroupService.getGroupEntryNode(existForward.getGroupId().longValue());
-        Integer newEntryNodeId = lbGroupService.getGroupEntryNode(newGroupId.longValue());
+                : lbGroupService.getGroupEntryNode(existForward.getGroupId());
+        Integer newEntryNodeId = lbGroupService.getGroupEntryNode(newGroupId);
 
         Node oldEntry = oldEntryNodeId == null ? null : nodeService.getById(oldEntryNodeId);
         Node newEntry = newEntryNodeId == null ? null : nodeService.getById(newEntryNodeId);
 
-        // 更新实体
+        // 鏇存柊瀹炰綋
         Forward updated = new Forward();
         BeanUtils.copyProperties(forwardUpdateDto, updated);
         updated.setId(forwardUpdateDto.getId());
@@ -184,26 +182,25 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         boolean portChanged = false;
         if (forwardUpdateDto.getInPort() != null && !forwardUpdateDto.getInPort().equals(existForward.getInPort())) {
             if (newEntry == null) {
-                return R.err("入口节点无效");
+                return R.err("鍏ュ彛鑺傜偣鏃犳晥");
             }
             Integer newPort = allocateInPort(newEntry, forwardUpdateDto.getInPort(), existForward.getId());
             if (newPort == null) {
-                return R.err("端口已被占用或不在允许范围内");
+                return R.err("绔彛宸茶鍗犵敤鎴栦笉鍦ㄥ厑璁歌寖鍥村唴");
             }
             updated.setInPort(newPort);
             portChanged = true;
         }
 
         if (!this.updateById(updated)) {
-            return R.err("端口转发更新失败");
+            return R.err("绔彛杞彂鏇存柊澶辫触");
         }
 
-        // 组变化时: 删除旧入口服务
-        if (groupChanged && oldEntry != null) {
+        // 缁勫彉鍖栨椂: 鍒犻櫎鏃у叆鍙ｆ湇鍔?        if (groupChanged && oldEntry != null) {
             try {
                 GostUtil.DeleteService(oldEntry.getId(), buildServiceName(existForward.getId()));
             } catch (Exception e) {
-                log.warn("删除旧入口服务失败: {}", e.getMessage());
+                log.warn("鍒犻櫎鏃у叆鍙ｆ湇鍔″け璐? {}", e.getMessage());
             }
         }
 
@@ -220,11 +217,11 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
     public R deleteForward(Long id) {
         Forward forward = this.getById(id);
         if (forward == null) {
-            return R.err("端口转发不存在");
+            return R.err("绔彛杞彂涓嶅瓨鍦?);
         }
 
         LbGroup group = forward.getGroupId() == null ? null : lbGroupService.getById(forward.getGroupId());
-        Integer entryNodeId = forward.getGroupId() == null ? null : lbGroupService.getGroupEntryNode(forward.getGroupId().longValue());
+        Integer entryNodeId = forward.getGroupId() == null ? null : lbGroupService.getGroupEntryNode(forward.getGroupId());
         Node entry = entryNodeId == null ? null : nodeService.getById(entryNodeId);
 
         if (entry != null) {
@@ -235,46 +232,46 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         }
 
         boolean result = this.removeById(id);
-        return result ? R.ok("端口转发删除成功") : R.err("端口转发删除失败");
+        return result ? R.ok("绔彛杞彂鍒犻櫎鎴愬姛") : R.err("绔彛杞彂鍒犻櫎澶辫触");
     }
 
     @Override
     public R forceDeleteForward(Long id) {
         Forward forward = this.getById(id);
         if (forward == null) {
-            return R.err("端口转发不存在");
+            return R.err("绔彛杞彂涓嶅瓨鍦?);
         }
         boolean result = this.removeById(id);
-        return result ? R.ok("端口转发强制删除成功") : R.err("端口转发强制删除失败");
+        return result ? R.ok("绔彛杞彂寮哄埗鍒犻櫎鎴愬姛") : R.err("绔彛杞彂寮哄埗鍒犻櫎澶辫触");
     }
 
     @Override
     public R pauseForward(Long id) {
-        return changeForwardStatus(id, FORWARD_STATUS_PAUSED, "暂停");
+        return changeForwardStatus(id, FORWARD_STATUS_PAUSED, "鏆傚仠");
     }
 
     @Override
     public R resumeForward(Long id) {
-        return changeForwardStatus(id, FORWARD_STATUS_ACTIVE, "恢复");
+        return changeForwardStatus(id, FORWARD_STATUS_ACTIVE, "鎭㈠");
     }
 
     @Override
     public R diagnoseForward(Long id) {
         Forward forward = this.getById(id);
         if (forward == null) {
-            return R.err("转发不存在");
+            return R.err("杞彂涓嶅瓨鍦?);
         }
 
-        Integer entryNodeId = lbGroupService.getGroupEntryNode(forward.getGroupId() == null ? 0L : forward.getGroupId());
+        Integer entryNodeId = lbGroupService.getGroupEntryNode(forward.getGroupId() == null ? null : forward.getGroupId());
         Node entry = entryNodeId == null ? null : nodeService.getById(entryNodeId);
         if (entry == null) {
-            return R.err("入口节点不存在");
+            return R.err("鍏ュ彛鑺傜偣涓嶅瓨鍦?);
         }
 
         List<Map<String, Object>> results = new ArrayList<>();
         String[] remoteAddresses = forward.getRemoteAddr() == null ? new String[0] : forward.getRemoteAddr().split(",");
 
-        // 入口节点到组内各线路出口的延迟(经组网/公网)
+        // 鍏ュ彛鑺傜偣鍒扮粍鍐呭悇绾胯矾鍑哄彛鐨勫欢杩?缁忕粍缃?鍏綉)
         List<GroupLink> groupLinks = lbGroupService.getGroupLinks(forward.getGroupId().longValue());
         for (GroupLink gl : groupLinks) {
             Link link = linkMapper.selectById(gl.getLinkId());
@@ -283,16 +280,15 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
             if (exitNode == null) continue;
             Integer probePort = getLinkExitProbePort(link, exitNode);
             if (probePort == null) {
-                // 直连线路(入口=出口), 无中继, 跳过链路段
-                continue;
+                // 鐩磋繛绾胯矾(鍏ュ彛=鍑哄彛), 鏃犱腑缁? 璺宠繃閾捐矾娈?                continue;
             }
             Map<String, Object> item = new HashMap<>();
             item.put("nodeName", entry.getName() + " -> " + exitNode.getName());
-            item.put("description", "入口->出口(" + link.getName() + ")");
+            item.put("description", "鍏ュ彛->鍑哄彛(" + link.getName() + ")");
             performDiagnosis(entry, exitNode.getServerIp(), probePort, item, results);
         }
 
-        // 各线路出口节点到目标
+        // 鍚勭嚎璺嚭鍙ｈ妭鐐瑰埌鐩爣
         for (GroupLink gl : groupLinks) {
             Link link = linkMapper.selectById(gl.getLinkId());
             if (link == null) continue;
@@ -304,7 +300,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
                 if (targetIp == null || targetPort == -1) continue;
                 Map<String, Object> item = new HashMap<>();
                 item.put("nodeName", exitNode.getName());
-                item.put("description", "出口->目标(" + link.getName() + ")");
+                item.put("description", "鍑哄彛->鐩爣(" + link.getName() + ")");
                 performDiagnosis(exitNode, targetIp, targetPort, item, results);
             }
         }
@@ -321,12 +317,12 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
     public R updateForwardOrder(Map<String, Object> params) {
         try {
             if (!params.containsKey("forwards")) {
-                return R.err("缺少forwards参数");
+                return R.err("缂哄皯forwards鍙傛暟");
             }
             @SuppressWarnings("unchecked")
             List<Map<String, Object>> forwardsList = (List<Map<String, Object>>) params.get("forwards");
             if (forwardsList == null || forwardsList.isEmpty()) {
-                return R.err("forwards参数不能为空");
+                return R.err("forwards鍙傛暟涓嶈兘涓虹┖");
             }
             List<Forward> forwardsToUpdate = new ArrayList<>();
             for (Map<String, Object> forwardData : forwardsList) {
@@ -338,10 +334,10 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
                 forwardsToUpdate.add(forward);
             }
             boolean success = this.updateBatchById(forwardsToUpdate);
-            return success ? R.ok("排序更新成功") : R.err("排序更新失败");
+            return success ? R.ok("鎺掑簭鏇存柊鎴愬姛") : R.err("鎺掑簭鏇存柊澶辫触");
         } catch (Exception e) {
-            log.error("更新转发排序失败", e);
-            return R.err("更新排序时发生错误: " + e.getMessage());
+            log.error("鏇存柊杞彂鎺掑簭澶辫触", e);
+            return R.err("鏇存柊鎺掑簭鏃跺彂鐢熼敊璇? " + e.getMessage());
         }
     }
 
@@ -351,7 +347,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         for (Forward forward : forwards) {
             R result = deployForward(forward);
             if (result.getCode() != 0) {
-                log.warn("组重下发失败 forward={}: {}", forward.getId(), result.getMsg());
+                log.warn("缁勯噸涓嬪彂澶辫触 forward={}: {}", forward.getId(), result.getMsg());
             }
             pushProbes(forward);
         }
@@ -359,27 +355,27 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
     }
 
     /**
-     * 下发转发完整配置:
-     *  1. 确保组内各线路链已下发(入口节点)
-     *  2. 下发入口服务(tcp+udp, chainGroup + forwarder)
+     * 涓嬪彂杞彂瀹屾暣閰嶇疆:
+     *  1. 纭繚缁勫唴鍚勭嚎璺摼宸蹭笅鍙?鍏ュ彛鑺傜偣)
+     *  2. 涓嬪彂鍏ュ彛鏈嶅姟(tcp+udp, chainGroup + forwarder)
      */
     @Override
     public R deployForward(Forward forward) {
         LbGroup group = validateGroup(forward.getGroupId());
         if (group == null) {
-            return R.err("负载均衡组不存在");
+            return R.err("璐熻浇鍧囪　缁勪笉瀛樺湪");
         }
 
-        Integer entryNodeId = lbGroupService.getGroupEntryNode(forward.getGroupId().longValue());
+        Integer entryNodeId = lbGroupService.getGroupEntryNode(forward.getGroupId());
         Node entryNode = entryNodeId == null ? null : nodeService.getById(entryNodeId);
         if (entryNode == null) {
-            return R.err("组内线路不存在或入口节点无效");
+            return R.err("缁勫唴绾胯矾涓嶅瓨鍦ㄦ垨鍏ュ彛鑺傜偣鏃犳晥");
         }
         if (entryNode.getStatus() == null || entryNode.getStatus() != 1) {
-            return R.err("入口节点不在线");
+            return R.err("鍏ュ彛鑺傜偣涓嶅湪绾?);
         }
 
-        // 1. 下发所有线路链
+        // 1. 涓嬪彂鎵€鏈夌嚎璺摼
         List<GroupLink> groupLinks = lbGroupService.getGroupLinks(forward.getGroupId().longValue());
         List<String> chainNames = new ArrayList<>();
         for (GroupLink gl : groupLinks) {
@@ -393,15 +389,15 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
                 chainResult = GostUtil.AddChains(entryNode.getId(), chainConfig);
             }
             if (!isGostOperationSuccess(chainResult)) {
-                return R.err("线路链下发失败: " + chainResult.getMsg());
+                return R.err("绾胯矾閾句笅鍙戝け璐? " + chainResult.getMsg());
             }
         }
 
         if (chainNames.isEmpty()) {
-            return R.err("组内没有可用线路");
+            return R.err("缁勫唴娌℃湁鍙敤绾胯矾");
         }
 
-        // 2. 下发入口服务
+        // 2. 涓嬪彂鍏ュ彛鏈嶅姟
         Integer limiter = forward.getSpeedId();
         String serviceName = buildServiceName(forward.getId());
         GostDto result = GostUtil.UpdateService(entryNode.getId(), serviceName, forward.getInPort(), limiter,
@@ -415,15 +411,15 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
                     forward.getInterfaceName());
         }
         if (!isGostOperationSuccess(result)) {
-            return R.err("入口服务下发失败: " + result.getMsg());
+            return R.err("鍏ュ彛鏈嶅姟涓嬪彂澶辫触: " + result.getMsg());
         }
         return R.ok();
     }
 
     /**
-     * 更新探测配置:
-     *  - 入口节点: 探测组内各线路的中继端点(链路延迟)
-     *  - 各线路出口节点: 探测目标地址(出口到目标延迟)
+     * 鏇存柊鎺㈡祴閰嶇疆:
+     *  - 鍏ュ彛鑺傜偣: 鎺㈡祴缁勫唴鍚勭嚎璺殑涓户绔偣(閾捐矾寤惰繜)
+     *  - 鍚勭嚎璺嚭鍙ｈ妭鐐? 鎺㈡祴鐩爣鍦板潃(鍑哄彛鍒扮洰鏍囧欢杩?
      */
     @Override
     public void pushProbes(Forward forward) {
@@ -438,8 +434,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
             Link link = linkMapper.selectById(gl.getLinkId());
             if (link == null) continue;
 
-            // 入口节点探测链路各中继端点
-            List<LinkRelay> relays = linkService.getLinkRelays(link.getId());
+            // 鍏ュ彛鑺傜偣鎺㈡祴閾捐矾鍚勪腑缁х鐐?            List<LinkRelay> relays = linkService.getLinkRelays(link.getId());
             List<JSONObject> entryProbes = probesByNode.computeIfAbsent(link.getEntryNodeId().longValue(), k -> new ArrayList<>());
             for (LinkRelay relay : relays) {
                 String addr = relay.getAddr() + ":" + relay.getPort();
@@ -449,7 +444,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
                 entryProbes.add(probe);
             }
 
-            // 出口节点探测目标
+            // 鍑哄彛鑺傜偣鎺㈡祴鐩爣
             Node exitNode = nodeService.getById(link.getExitNodeId());
             if (exitNode == null) continue;
             List<JSONObject> exitProbes = probesByNode.computeIfAbsent(exitNode.getId(), k -> new ArrayList<>());
@@ -464,11 +459,11 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
             }
         }
 
-        // 下发到各节点(合并同节点已有探测)
+        // 涓嬪彂鍒板悇鑺傜偣(鍚堝苟鍚岃妭鐐瑰凡鏈夋帰娴?
         for (Map.Entry<Long, List<JSONObject>> entry : probesByNode.entrySet()) {
             Node node = nodeService.getById(entry.getKey());
             if (node == null || node.getStatus() == null || node.getStatus() != 1) continue;
-            List<JSONObject> existing = LatencyCache.getNodeProbes(entry.getKey());
+            List<LatencyCache.ProbeEntry> existing = LatencyCache.getNodeProbes(entry.getKey());
             Set<String> keys = new HashSet<>();
             for (JSONObject probe : entry.getValue()) {
                 keys.add(probe.getString("key"));
@@ -486,26 +481,25 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         }
     }
 
-    // ==================== 内部方法 ====================
+    // ==================== 鍐呴儴鏂规硶 ====================
 
     private R changeForwardStatus(Long id, int targetStatus, String operation) {
         Forward forward = this.getById(id);
         if (forward == null) {
-            return R.err("转发不存在");
+            return R.err("杞彂涓嶅瓨鍦?);
         }
 
-        // 恢复时先重新下发, 确保配置与当前组/线路一致
-        if (targetStatus == FORWARD_STATUS_ACTIVE) {
+        // 鎭㈠鏃跺厛閲嶆柊涓嬪彂, 纭繚閰嶇疆涓庡綋鍓嶇粍/绾胯矾涓€鑷?        if (targetStatus == FORWARD_STATUS_ACTIVE) {
             R deployResult = deployForward(forward);
             if (deployResult.getCode() != 0) {
                 return deployResult;
             }
         }
 
-        Integer entryNodeId = lbGroupService.getGroupEntryNode(forward.getGroupId().longValue());
+        Integer entryNodeId = lbGroupService.getGroupEntryNode(forward.getGroupId());
         Node entry = entryNodeId == null ? null : nodeService.getById(entryNodeId);
         if (entry == null) {
-            return R.err("入口节点不存在");
+            return R.err("鍏ュ彛鑺傜偣涓嶅瓨鍦?);
         }
 
         GostDto gostResult;
@@ -516,13 +510,13 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         }
 
         if (!isGostOperationSuccess(gostResult)) {
-            return R.err(operation + "服务失败：" + gostResult.getMsg());
+            return R.err(operation + "鏈嶅姟澶辫触锛? + gostResult.getMsg());
         }
 
         forward.setStatus(targetStatus);
         forward.setUpdatedTime(System.currentTimeMillis());
         boolean result = this.updateById(forward);
-        return result ? R.ok("服务已" + operation) : R.err("更新状态失败");
+        return result ? R.ok("鏈嶅姟宸? + operation) : R.err("鏇存柊鐘舵€佸け璐?);
     }
 
     private LbGroup validateGroup(Integer groupId) {
@@ -543,11 +537,11 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
     }
 
     private Integer allocateInPort(Node node, Integer specifiedPort, Long excludeForwardId) {
-        // 该节点作为入口时被占用的端口
+        // 璇ヨ妭鐐逛綔涓哄叆鍙ｆ椂琚崰鐢ㄧ殑绔彛
         Set<Integer> nodePorts = new HashSet<>();
         for (Forward f : this.list(null)) {
             if (excludeForwardId != null && Objects.equals(f.getId(), excludeForwardId)) continue;
-            Integer entryNodeId = lbGroupService.getGroupEntryNode(f.getGroupId().longValue());
+            Integer entryNodeId = lbGroupService.getGroupEntryNode(f.getGroupId());
             if (entryNodeId != null && Objects.equals(entryNodeId.longValue(), node.getId().longValue())) {
                 nodePorts.add(f.getInPort());
             }
@@ -580,7 +574,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
 
         GostDto gostResult = WebSocketServer.send_msg(node.getId(), tcpPingData, "TcpPing");
         item.put("success", false);
-        item.put("message", "节点无响应");
+        item.put("message", "鑺傜偣鏃犲搷搴?);
         item.put("averageTime", -1.0);
         item.put("packetLoss", 100.0);
         try {
@@ -588,7 +582,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
                 JSONObject resp = (JSONObject) JSONObject.toJSON(gostResult.getData());
                 item.put("success", resp.getBooleanValue("success"));
                 if (resp.getBooleanValue("success")) {
-                    item.put("message", "连接成功");
+                    item.put("message", "杩炴帴鎴愬姛");
                     item.put("averageTime", resp.getDoubleValue("averageTime"));
                     item.put("packetLoss", resp.getDoubleValue("packetLoss"));
                 } else {
@@ -596,7 +590,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
                 }
             }
         } catch (Exception e) {
-            log.warn("诊断解析失败: {}", e.getMessage());
+            log.warn("璇婃柇瑙ｆ瀽澶辫触: {}", e.getMessage());
         }
         results.add(item);
     }

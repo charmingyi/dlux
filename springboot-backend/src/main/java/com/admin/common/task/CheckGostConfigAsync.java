@@ -85,7 +85,7 @@ public class CheckGostConfigAsync {
                     if (parts.length == 2) {
                         Long linkId = parseLongSafe(parts[0].substring(1));
                         if (linkId != null) {
-                            Long count = linkRelayMapper.selectCount(new QueryWrapper<LinkRelay>()
+                            Integer count = linkRelayMapper.selectCount(new QueryWrapper<LinkRelay>()
                                     .eq("link_id", linkId).eq("node_id", parts[1]).eq("status", 1));
                             expected = count != null && count > 0;
                         }

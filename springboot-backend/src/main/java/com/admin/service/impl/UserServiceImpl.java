@@ -120,7 +120,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         }
 
         if (!user.getUser().equals(changePasswordDto.getNewUsername())) {
-            Long exists = this.count(new QueryWrapper<User>().eq("user", changePasswordDto.getNewUsername()).ne("id", user.getId()));
+            long exists = this.count(new QueryWrapper<User>().eq("user", changePasswordDto.getNewUsername()).ne("id", user.getId()));
             if (exists != null && exists > 0) {
                 return R.err(ERROR_USERNAME_TAKEN);
             }

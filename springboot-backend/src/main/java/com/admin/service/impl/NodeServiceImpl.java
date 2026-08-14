@@ -211,7 +211,7 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
             return R.err(String.format(ERROR_NODE_IN_USE, linkCount));
         }
 
-        Long wgCount = nodeWgMapper.selectCount(new QueryWrapper<com.admin.entity.NodeWg>().eq("node_id", nodeId));
+        Integer wgCount = nodeWgMapper.selectCount(new QueryWrapper<com.admin.entity.NodeWg>().eq("node_id", nodeId));
         if (wgCount != null && wgCount > 0) {
             return R.err(ERROR_NODE_IN_WG);
         }

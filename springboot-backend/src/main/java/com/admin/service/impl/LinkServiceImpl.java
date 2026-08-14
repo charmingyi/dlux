@@ -188,7 +188,7 @@ public class LinkServiceImpl extends ServiceImpl<LinkMapper, Link> implements Li
             return R.err(ERROR_LINK_NOT_FOUND);
         }
 
-        Long groupCount = groupLinkMapper.selectCount(new QueryWrapper<GroupLink>().eq("link_id", id).eq("status", 1));
+        Integer groupCount = groupLinkMapper.selectCount(new QueryWrapper<GroupLink>().eq("link_id", id).eq("status", 1));
         if (groupCount != null && groupCount > 0) {
             return R.err(ERROR_LINK_IN_GROUP);
         }
