@@ -118,9 +118,9 @@ npm run build
 推送到 `main` 分支后，GitHub Actions 自动：
 1. 编译节点代理二进制（amd64/arm64）并上传到 Release
 2. 可选推送 Docker 镜像（需配置 `DOCKER_HUB_USERNAME` / `DOCKER_HUB_TOKEN` secrets，未配置不影响 Release 发布）
-3. 创建 tag `1.1.0` 与 Release，上传安装脚本 / docker-compose / panel.sql
+3. 创建 tag `1.1.1` 与 Release，上传安装脚本 / docker-compose / panel.sql
 
-> 从 1.0.x 升级：v1.1 新增 `WgPrepare` 与 `WgStatus` 节点命令。旧节点仍可兼容同步，但要获得无中断同步和真实运行状态，请先在节点页按提示升级 Agent 到 1.1.0。
+> 从 1.0.x 升级：v1.1 新增 `WgPrepare` 与 `WgStatus` 节点命令。旧节点仍可兼容同步，但要获得无中断同步和真实运行状态，请先在节点页按提示升级 Agent 到 1.1.1。
 
 ## 免责声明
 
