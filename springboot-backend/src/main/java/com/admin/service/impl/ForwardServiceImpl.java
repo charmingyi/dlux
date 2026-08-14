@@ -86,7 +86,8 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         }
 
         // 3. 分配端口
-        Integer inPort = allocateInPort(entryNode, forwardDto.getInPort());
+        Set<Integer> rejectedPorts = new HashSet<>();
+        Integer inPort = allocateInPort(entryNode, forwardDto.getInPort(), null, rejectedPorts);
         if (inPort == null) {
             return R.err(forwardDto.getInPort() != null ? "端口已被占用或不在允许范围内" : "入口端口已满");
         }
@@ -106,13 +107,32 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         }
 
         // 5. 下发配置
-        R deployResult = deployForward(forward);
-        if (deployResult.getCode() != 0) {
+        while (true) {
+            R deployResult = deployForward(forward);
+            if (deployResult.getCode() == 0) {
+                break;
+            }
+
             try {
                 GostUtil.DeleteService(entryNode.getId(), buildServiceName(forward.getId()));
             } catch (Exception e) {
                 log.warn("清理创建失败的入口服务失败 forward={}: {}", forward.getId(), e.getMessage());
             }
+
+            if (forwardDto.getInPort() == null && isAddressAlreadyInUse(deployResult)) {
+                rejectedPorts.add(forward.getInPort());
+                Integer nextPort = allocateInPort(entryNode, null, forward.getId(), rejectedPorts);
+                if (nextPort != null) {
+                    log.info("节点 {} 入口端口 {} 已被节点侧占用，改用端口 {}",
+                            entryNode.getName(), forward.getInPort(), nextPort);
+                    forward.setInPort(nextPort);
+                    forward.setUpdatedTime(System.currentTimeMillis());
+                    if (this.updateById(forward)) {
+                        continue;
+                    }
+                }
+            }
+
             this.removeById(forward.getId());
             return deployResult;
         }
@@ -662,10 +682,15 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
     }
 
     private Integer allocateInPort(Node node, Integer specifiedPort) {
-        return allocateInPort(node, specifiedPort, null);
+        return allocateInPort(node, specifiedPort, null, Collections.emptySet());
     }
 
     private Integer allocateInPort(Node node, Integer specifiedPort, Long excludeForwardId) {
+        return allocateInPort(node, specifiedPort, excludeForwardId, Collections.emptySet());
+    }
+
+    private Integer allocateInPort(Node node, Integer specifiedPort, Long excludeForwardId,
+                                   Set<Integer> excludedPorts) {
         // 该节点作为入口时被占用的端口
         Set<Integer> nodePorts = new HashSet<>();
         for (Forward f : this.list(null)) {
@@ -687,11 +712,19 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         }
 
         for (int port = node.getPortSta(); port <= node.getPortEnd(); port++) {
-            if (!nodePorts.contains(port)) {
+            if (!nodePorts.contains(port) && !excludedPorts.contains(port)) {
                 return port;
             }
         }
         return null;
+    }
+
+    private boolean isAddressAlreadyInUse(R result) {
+        if (result == null || result.getMsg() == null) {
+            return false;
+        }
+        String message = result.getMsg().toLowerCase();
+        return message.contains("address already in use") || message.contains("bind:");
     }
 
     private void performDiagnosis(Node node, String targetIp, int port, Map<String, Object> item, List<Map<String, Object>> results) {
