@@ -1,5 +1,6 @@
 package com.admin.service.impl;
 
+import cloud.tianai.captcha.application.ImageCaptchaApplication;
 import cloud.tianai.captcha.spring.plugins.secondary.SecondaryVerificationApplication;
 import cn.hutool.core.map.MapUtil;
 import com.admin.common.dto.ChangePasswordDto;
