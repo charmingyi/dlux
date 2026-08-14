@@ -1,0 +1,289 @@
+﻿name: Build and Release
+
+env:
+  VERSION: "2.0.0"
+
+on:
+  push:
+    branches:
+      - main
+      - beta
+
+jobs:
+  check-version:
+    name: Check Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ env.VERSION }}
+      should_build: ${{ steps.check-tag.outputs.should_build }}
+      should_build_agent: ${{ steps.check-tag.outputs.should_build_agent }}
+      tag_exists: ${{ steps.check-tag.outputs.tag_exists }}
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Check tag status
+        id: check-tag
+        run: |
+          if git rev-parse "${{ env.VERSION }}" >/dev/null 2>&1; then
+            echo "Tag ${{ env.VERSION }} already exists"
+            echo "tag_exists=true" >> $GITHUB_OUTPUT
+            echo "should_build=false" >> $GITHUB_OUTPUT
+            TAG_COMMIT=$(git rev-list -n 1 "${{ env.VERSION }}")
+            if git diff --quiet --ignore-all-space --ignore-blank-lines $TAG_COMMIT HEAD -- go-gost/ 2>/dev/null; then
+              echo "Agent files unchanged since tag"
+              echo "should_build_agent=false" >> $GITHUB_OUTPUT
+            else
+              echo "Agent files changed, rebuild binary"
+              echo "should_build_agent=true" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "Tag ${{ env.VERSION }} does not exist, will build all"
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "should_build_agent=true" >> $GITHUB_OUTPUT
+            echo "tag_exists=false" >> $GITHUB_OUTPUT
+          fi
+
+  build-agent:
+    name: Build Agent Binary
+    needs: check-version
+    if: needs.check-version.outputs.should_build_agent == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.23'
+
+      - name: Cache Go modules
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Build agent (AMD64)
+        working-directory: ./go-gost
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -buildid=" -o relay-amd64
+
+      - name: Build agent (ARM64)
+        working-directory: ./go-gost
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w -buildid=" -o relay-arm64
+
+      - name: Upload AMD64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: relay-binary-amd64
+          path: ./go-gost/relay-amd64
+
+      - name: Upload ARM64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: relay-binary-arm64
+          path: ./go-gost/relay-arm64
+
+  build-vite:
+    name: Build & Push Vite Frontend
+    needs: check-version
+    if: needs.check-version.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Log in to DockerHub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+
+      - name: Build and push Vite Docker images
+        run: |
+          VERSION="${{ needs.check-version.outputs.version }}"
+          NAMESPACE="${{ github.repository_owner }}"
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --push \
+            -t ${NAMESPACE}/vite-frontend:latest \
+            -t ${NAMESPACE}/vite-frontend:${VERSION} \
+            ./vite-frontend
+
+  build-java:
+    name: Build & Push Spring Boot Backend
+    needs: check-version
+    if: needs.check-version.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up JDK and Maven
+        uses: actions/setup-java@v3
+        with:
+          java-version: 21
+          distribution: 'temurin'
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-m2
+
+      - name: Build Java JAR
+        working-directory: ./springboot-backend
+        run: mvn clean package -DskipTests
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Log in to DockerHub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+
+      - name: Build and push Java Docker images
+        run: |
+          VERSION="${{ needs.check-version.outputs.version }}"
+          NAMESPACE="${{ github.repository_owner }}"
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --push \
+            -t ${NAMESPACE}/springboot-backend:latest \
+            -t ${NAMESPACE}/springboot-backend:${VERSION} \
+            ./springboot-backend
+
+  create-release:
+    name: Create Release
+    needs: [check-version, build-agent]
+    if: needs.check-version.outputs.should_build == 'true' || needs.check-version.outputs.should_build_agent == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Download AMD64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: relay-binary-amd64
+          path: ./artifacts/amd64
+
+      - name: Download ARM64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: relay-binary-arm64
+          path: ./artifacts/arm64
+
+      - name: Rename binaries
+        run: |
+          mkdir -p ./artifacts
+          mv ./artifacts/amd64/relay-amd64 ./artifacts/relay-amd64
+          mv ./artifacts/arm64/relay-arm64 ./artifacts/relay-arm64
+
+      - name: Create Release and upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ needs.check-version.outputs.version }}"
+
+          # 创建并推送 tag
+          git tag "${VERSION}" ${{ github.sha }}
+          git push origin "${VERSION}"
+
+          # 创建 release
+          gh release create "${VERSION}" \
+            --title "Release ${VERSION}" \
+            --notes "Network Relay Panel v${VERSION}" \
+            --repo ${{ github.repository }} || true
+
+          # 上传节点二进制
+          gh release upload "${VERSION}" ./artifacts/relay-amd64 --clobber
+          gh release upload "${VERSION}" ./artifacts/relay-arm64 --clobber
+
+          # 上传安装脚本
+          gh release upload "${VERSION}" ./install.sh --clobber
+          gh release upload "${VERSION}" ./panel_install.sh --clobber
+
+          # 上传 docker-compose 与数据库初始化
+          gh release upload "${VERSION}" ./docker-compose.yml --clobber
+          gh release upload "${VERSION}" ./docker-compose-v4.yml --clobber
+          gh release upload "${VERSION}" ./docker-compose-v6.yml --clobber
+          gh release upload "${VERSION}" ./panel.sql --clobber
+
+          echo "All assets uploaded to Release ${VERSION}"
+
+  update-release-agent:
+    name: Update Agent Binary in Release
+    needs: [check-version, build-agent]
+    if: needs.check-version.outputs.should_build == 'false' && needs.check-version.outputs.should_build_agent == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Download AMD64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: relay-binary-amd64
+          path: ./artifacts/amd64
+
+      - name: Download ARM64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: relay-binary-arm64
+          path: ./artifacts/arm64
+
+      - name: Rename binaries
+        run: |
+          mkdir -p ./artifacts
+          mv ./artifacts/amd64/relay-amd64 ./artifacts/relay-amd64
+          mv ./artifacts/arm64/relay-arm64 ./artifacts/relay-arm64
+
+      - name: Update binaries in Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ needs.check-version.outputs.version }}"
+          gh release upload "${VERSION}" ./artifacts/relay-amd64 --clobber
+          gh release upload "${VERSION}" ./artifacts/relay-arm64 --clobber
+
+  update-release-files:
+    name: Update Release Files Only
+    needs: check-version
+    if: needs.check-version.outputs.tag_exists == 'true' && needs.check-version.outputs.should_build == 'false' && needs.check-version.outputs.should_build_agent == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Update Release Files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ needs.check-version.outputs.version }}"
+          gh release upload "${VERSION}" ./install.sh --clobber
+          gh release upload "${VERSION}" ./panel_install.sh --clobber
+          gh release upload "${VERSION}" ./docker-compose.yml --clobber
+          gh release upload "${VERSION}" ./docker-compose-v4.yml --clobber
+          gh release upload "${VERSION}" ./docker-compose-v6.yml --clobber
+          gh release upload "${VERSION}" ./panel.sql --clobber

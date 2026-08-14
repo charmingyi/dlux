@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.admin.mapper.LinkMapper">
+
+    <select id="selectAllLinks" resultType="com.admin.common.dto.LinkListDto">
+        SELECT
+            l.id,
+            l.name,
+            l.wg_network_id AS wgNetworkId,
+            w.name AS wgNetworkName,
+            l.transport,
+            l.entry_node_id AS entryNodeId,
+            en.name AS entryNodeName,
+            en.status AS entryNodeStatus,
+            l.exit_node_id AS exitNodeId,
+            xn.name AS exitNodeName,
+            xn.status AS exitNodeStatus,
+            l.hop_node_ids AS hopNodeIds,
+            l.status,
+            l.created_time AS createdTime,
+            l.updated_time AS updatedTime,
+            CASE
+                WHEN l.hop_node_ids IS NULL OR l.hop_node_ids = '' OR l.hop_node_ids = '[]'
+                    THEN 2
+                ELSE 2 + JSON_LENGTH(l.hop_node_ids)
+            END AS nodeCount,
+            nw.ip AS entryWgIp
+        FROM link l
+        LEFT JOIN node en ON en.id = l.entry_node_id
+        LEFT JOIN node xn ON xn.id = l.exit_node_id
+        LEFT JOIN wg_network w ON w.id = l.wg_network_id
+        LEFT JOIN node_wg nw ON nw.node_id = l.entry_node_id AND nw.wg_network_id = l.wg_network_id
+        ORDER BY l.created_time DESC
+    </select>
+
+    <select id="selectLinkCountByWgNetwork" resultType="java.lang.Long">
+        SELECT COUNT(*) FROM link WHERE wg_network_id = #{wgNetworkId}
+    </select>
+
+    <select id="selectLinkCountByNode" resultType="java.lang.Long">
+        SELECT COUNT(*) FROM link
+        WHERE entry_node_id = #{nodeId} OR exit_node_id = #{nodeId}
+           OR hop_node_ids LIKE CONCAT('%', #{nodeId}, '%')
+    </select>
+
+    <select id="selectLinkCountByGroup" resultType="java.lang.Long">
+        SELECT COUNT(*) FROM group_link WHERE group_id = #{groupId}
+    </select>
+
+</mapper>

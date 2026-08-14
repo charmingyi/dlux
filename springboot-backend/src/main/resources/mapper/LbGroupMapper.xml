@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.admin.mapper.LbGroupMapper">
+
+    <select id="selectAllGroups" resultType="com.admin.common.dto.GroupListDto">
+        SELECT
+            g.id,
+            g.name,
+            g.strategy,
+            g.max_fails AS maxFails,
+            g.fail_timeout AS failTimeout,
+            g.status,
+            g.created_time AS createdTime,
+            (SELECT COUNT(*) FROM group_link gl WHERE gl.group_id = g.id AND gl.status = 1) AS linkCount,
+            (SELECT COUNT(*) FROM forward f WHERE f.group_id = g.id) AS forwardCount
+        FROM lb_group g
+        ORDER BY g.created_time DESC
+    </select>
+
+</mapper>

@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.admin.mapper.ForwardMapper">
+
+    <!-- 查询所有转发信息(包含组信息) -->
+    <select id="selectAllForwardsWithGroup" resultType="com.admin.common.dto.ForwardWithGroupDto">
+        SELECT
+            f.id,
+            f.name,
+            f.group_id AS groupId,
+            f.in_port AS inPort,
+            f.remote_addr AS remoteAddr,
+            f.status,
+            f.created_time AS createdTime,
+            f.updated_time AS updatedTime,
+            f.target_strategy AS targetStrategy,
+            f.speed_id AS speedId,
+            f.interface_name AS interfaceName,
+            f.in_flow AS inFlow,
+            f.out_flow AS outFlow,
+            f.inx AS inx,
+            g.name AS groupName,
+            g.strategy AS groupStrategy,
+            (SELECT COUNT(*) FROM group_link gl WHERE gl.group_id = g.id AND gl.status = 1) AS linkCount,
+            (SELECT n.id FROM link l
+                JOIN group_link gl2 ON gl2.link_id = l.id AND gl2.status = 1
+                JOIN node n ON n.id = l.entry_node_id
+                WHERE gl2.group_id = g.id AND l.status = 1 LIMIT 1) AS entryNodeId,
+            (SELECT n.name FROM link l
+                JOIN group_link gl2 ON gl2.link_id = l.id AND gl2.status = 1
+                JOIN node n ON n.id = l.entry_node_id
+                WHERE gl2.group_id = g.id AND l.status = 1 LIMIT 1) AS entryNodeName,
+            (SELECT n.status FROM link l
+                JOIN group_link gl2 ON gl2.link_id = l.id AND gl2.status = 1
+                JOIN node n ON n.id = l.entry_node_id
+                WHERE gl2.group_id = g.id AND l.status = 1 LIMIT 1) AS entryNodeStatus,
+            sl.name AS speedName
+        FROM
+            forward f
+        LEFT JOIN lb_group g ON f.group_id = g.id
+        LEFT JOIN speed_limit sl ON f.speed_id = sl.id
+        ORDER BY
+            f.created_time DESC
+    </select>
+
+    <select id="selectForwardCountByGroup" resultType="java.lang.Long">
+        SELECT COUNT(*) FROM forward WHERE group_id = #{groupId}
+    </select>
+
+</mapper>
