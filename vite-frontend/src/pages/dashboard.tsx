@@ -15,8 +15,6 @@ const formatBytes = (bytes: number) => {
   return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
 };
 
-const formatBytesPerSec = (bytes: number) => `${formatBytes(bytes)}/s`;
-
 interface Overview {
   nodeCount: number;
   onlineNodeCount: number;
