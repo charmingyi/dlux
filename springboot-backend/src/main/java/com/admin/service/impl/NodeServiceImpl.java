@@ -178,6 +178,11 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
         if (node.getStatus() == null || node.getStatus() != 1) {
             return R.err("节点不在线, 无法在线更新");
         }
+        String version = node.getVersion();
+        if (version == null || version.compareTo("1.0.1") < 0) {
+            String cmd = "cd /opt/relay && curl -L -o relay.new https://github.com/charmingyi/dlux/releases/download/1.0.0/relay-amd64 && mv relay.new relay && chmod +x relay && systemctl restart relay";
+            return R.err("节点版本过旧(" + (version == null ? "未知" : version) + "), 需SSH一次性升级:\n" + cmd);
+        }
         GostDto result = GostUtil.UpdateAgent(node.getId());
         if (result == null || !"OK".equals(result.getMsg())) {
             return R.err(result == null ? "节点无响应" : result.getMsg());
