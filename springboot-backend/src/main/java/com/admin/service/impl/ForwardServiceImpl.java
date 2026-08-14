@@ -396,15 +396,15 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
             if (link == null) continue;
             Node exitNode = nodeService.getById(link.getExitNodeId());
             if (exitNode == null) continue;
-            Integer probePort = getLinkExitProbePort(link, exitNode);
-            if (probePort == null) {
+            LinkRelay exitRelay = getLinkExitRelay(link, exitNode);
+            if (exitRelay == null) {
                 // 直连线路(入口=出口), 无中继, 跳过链路段
                 continue;
             }
             Map<String, Object> item = new HashMap<>();
             item.put("nodeName", entry.getName() + " -> " + exitNode.getName());
             item.put("description", "入口->出口(" + link.getName() + ")");
-            performDiagnosis(entry, exitNode.getServerIp(), probePort, item, results);
+            performDiagnosis(entry, exitRelay.getAddr(), exitRelay.getPort(), item, results);
         }
 
         // 各线路出口节点到目标
@@ -757,11 +757,11 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         results.add(item);
     }
 
-    private Integer getLinkExitProbePort(Link link, Node exitNode) {
+    private LinkRelay getLinkExitRelay(Link link, Node exitNode) {
         List<LinkRelay> relays = linkService.getLinkRelays(link.getId());
         for (LinkRelay relay : relays) {
             if (Objects.equals(relay.getNodeId(), exitNode.getId().intValue())) {
-                return relay.getPort();
+                return relay;
             }
         }
         return null;
