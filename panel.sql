@@ -119,6 +119,8 @@ CREATE TABLE IF NOT EXISTS `group_link` (
   `link_id` int(10) NOT NULL,
   `weight` int(10) NOT NULL DEFAULT '1' COMMENT '权重(random策略使用)',
   `inx` int(10) NOT NULL DEFAULT '0',
+  `created_time` bigint(20) NOT NULL DEFAULT '0',
+  `updated_time` bigint(20) NOT NULL DEFAULT '0',
   `status` int(10) NOT NULL DEFAULT '1',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_group_link` (`group_id`,`link_id`)
