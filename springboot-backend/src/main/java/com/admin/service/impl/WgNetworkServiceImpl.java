@@ -5,6 +5,7 @@ import com.admin.common.dto.WgMemberDto;
 import com.admin.common.dto.WgNetworkDto;
 import com.admin.common.lang.R;
 import com.admin.common.utils.GostUtil;
+import com.admin.common.utils.LatencyCache;
 import com.admin.entity.Node;
 import com.admin.entity.NodeWg;
 import com.admin.entity.WgNetwork;
@@ -242,6 +243,41 @@ public class WgNetworkServiceImpl extends ServiceImpl<WgNetworkMapper, WgNetwork
             }
         }
 
+        // 阶段3: 组网内ICMP延迟探测(节点互相ping组网IP)
+        for (NodeWg member : members) {
+            Node node = nodeService.getById(member.getNodeId());
+            if (node == null || node.getStatus() == null || node.getStatus() != 1) {
+                continue;
+            }
+            List<String> peerIps = new ArrayList<>();
+            for (NodeWg other : members) {
+                if (!Objects.equals(other.getId(), member.getId()) && other.getPublicKey() != null) {
+                    peerIps.add(other.getIp());
+                }
+            }
+            if (peerIps.isEmpty()) continue;
+            GostDto result = GostUtil.PingIps(node.getId(), peerIps);
+            if (isGostOperationSuccess(result) && result.getData() != null) {
+                try {
+                    JSONArray arr = (JSONArray) result.getData();
+                    List<LatencyCache.ProbeEntry> entries = new ArrayList<>();
+                    for (int i = 0; i < arr.size(); i++) {
+                        JSONObject item = arr.getJSONObject(i);
+                        LatencyCache.ProbeEntry entry = new LatencyCache.ProbeEntry();
+                        entry.setKey("wg:" + network.getId() + ":" + member.getNodeId() + ":" + item.getString("ip"));
+                        entry.setAddr(item.getString("ip"));
+                        entry.setMs(item.getDoubleValue("ms"));
+                        entry.setUp(item.getBooleanValue("up"));
+                        entry.setTs(System.currentTimeMillis());
+                        entries.add(entry);
+                    }
+                    LatencyCache.updateProbes(node.getId(), entries);
+                } catch (Exception e) {
+                    log.warn("解析组网延迟失败 node={}: {}", node.getId(), e.getMessage());
+                }
+            }
+        }
+
         if (!allOnline) {
             return R.ok("部分节点离线, 已为在线节点下发配置");
         }
@@ -304,6 +340,17 @@ public class WgNetworkServiceImpl extends ServiceImpl<WgNetworkMapper, WgNetwork
             md.setHub(member.getHub());
             md.setPublicKey(member.getPublicKey());
             md.setApplied(1);
+            md.setLatencies(new java.util.HashMap<>());
+            // 该节点到组网内其他节点的延迟
+            List<LatencyCache.ProbeEntry> probes = LatencyCache.getNodeProbes(member.getNodeId().longValue());
+            if (probes != null) {
+                String prefix = "wg:" + network.getId() + ":" + member.getNodeId() + ":";
+                for (LatencyCache.ProbeEntry p : probes) {
+                    if (p.getKey() != null && p.getKey().startsWith(prefix)) {
+                        md.getLatencies().put(p.getKey(), p);
+                    }
+                }
+            }
             Node node = nodeService.getById(member.getNodeId());
             if (node != null) {
                 md.setNodeName(node.getName());

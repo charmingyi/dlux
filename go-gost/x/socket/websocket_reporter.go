@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
+	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync" // 新增：用于管理连接状态的互斥锁
@@ -21,7 +24,6 @@ import (
 	"github.com/shirou/gopsutil/v3/host"
 	"github.com/shirou/gopsutil/v3/mem"
 	psnet "github.com/shirou/gopsutil/v3/net"
-	"os"
 )
 
 // SystemInfo 系统信息结构体
@@ -577,6 +579,18 @@ func (w *WebSocketReporter) routeCommand(cmd CommandMessage) {
 	case "WgRemove":
 		err = w.handleWgRemove(cmd.Data)
 		response.Type = "WgRemoveResponse"
+
+	// 组网内ICMP延迟探测
+	case "PingIps":
+		var pingResult []PingIpsResult
+		pingResult, err = w.handlePingIps(cmd.Data)
+		response.Type = "PingIpsResponse"
+		response.Data = pingResult
+
+	// 节点在线自更新
+	case "UpdateAgent":
+		err = w.handleUpdateAgent(cmd.Data)
+		response.Type = "UpdateAgentResponse"
 
 	// 心跳探测(面板据此计算面板到节点的延迟)
 	case "Ping":
@@ -1141,6 +1155,81 @@ func wgApplyName(data interface{}) string {
 		return ""
 	}
 	return req.Name
+}
+
+// handlePingIps 处理组网内ICMP延迟探测
+func (w *WebSocketReporter) handlePingIps(data interface{}) ([]PingIpsResult, error) {
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("序列化ping请求失败: %v", err)
+	}
+
+	var req PingIpsRequest
+	if err := json.Unmarshal(jsonData, &req); err != nil {
+		return nil, fmt.Errorf("解析ping请求失败: %v", err)
+	}
+
+	return PingIps(&req), nil
+}
+
+// handleUpdateAgent 节点在线自更新: 下载最新release二进制并替换重启
+func (w *WebSocketReporter) handleUpdateAgent(data interface{}) error {
+	repoURL := "https://github.com/charmingyi/dlux"
+	version := "1.0.0"
+
+	arch := runtime.GOARCH
+	if arch == "x86_64" || arch == "amd64" {
+		arch = "amd64"
+	} else {
+		arch = "arm64"
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("获取当前程序路径失败: %v", err)
+	}
+
+	url := fmt.Sprintf("%s/releases/download/%s/relay-%s", repoURL, version, arch)
+	tmp := exe + ".new"
+
+	fmt.Printf("开始在线更新: %s\n", url)
+	cmd := exec.Command("curl", "-fL", "--connect-timeout", "15", "-o", tmp, url)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("下载新版本失败: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+
+	st, err := os.Stat(tmp)
+	if err != nil || st.Size() < 10*1024*1024 {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("下载文件异常(大小: %d)", func() int64 {
+			if st != nil {
+				return st.Size()
+			}
+			return 0
+		}())
+	}
+
+	if err := os.Chmod(tmp, 0o755); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("设置权限失败: %v", err)
+	}
+
+	if err := os.Rename(tmp, exe); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("替换程序失败: %v", err)
+	}
+
+	// 延迟重启, 确保响应已回传
+	go func() {
+		time.Sleep(1500 * time.Millisecond)
+		if err := exec.Command("systemctl", "restart", "relay").Run(); err != nil {
+			// 无systemd环境时直接退出, 由守护进程拉起
+			os.Exit(0)
+		}
+	}()
+
+	return nil
 }
 
 // handleWgRemove 移除WireGuard组网配置

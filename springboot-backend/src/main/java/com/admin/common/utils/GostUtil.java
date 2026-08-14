@@ -217,6 +217,18 @@ public class GostUtil {
         return WebSocketServer.send_msg(node_id, req, "WgRemove");
     }
 
+    /** 组网内ICMP延迟探测 */
+    public static GostDto PingIps(Long node_id, List<String> ips) {
+        JSONObject data = new JSONObject();
+        data.put("ips", ips);
+        return WebSocketServer.send_msg(node_id, data, "PingIps");
+    }
+
+    /** 节点在线自更新 */
+    public static GostDto UpdateAgent(Long node_id) {
+        return WebSocketServer.send_msg(node_id, new JSONObject(), "UpdateAgent");
+    }
+
     // ==================== 配置构造 ====================
 
     private static JSONObject createLimiterData(Long name, String speed) {

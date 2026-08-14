@@ -28,4 +28,7 @@ public interface NodeService extends IService<Node> {
 
     R getInstallCommand(Long id);
 
+    /** 在线更新节点代理 */
+    R updateAgent(Long id);
+
 }

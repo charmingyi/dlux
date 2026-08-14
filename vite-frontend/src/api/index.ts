@@ -26,6 +26,7 @@ export const getNodeList = () => Network.post("/node/list");
 export const updateNode = (data: any) => Network.post("/node/update", data);
 export const deleteNode = (id: number) => Network.post("/node/delete", { id });
 export const getNodeInstallCommand = (id: number) => Network.post("/node/install", { id });
+export const updateNodeAgent = (id: number) => Network.post("/node/update-agent", { id });
 
 // WireGuard组网
 export const createWgNetwork = (data: any) => Network.post("/wg/create", data);

@@ -32,4 +32,7 @@ public class WgMemberDto {
     /** 组网是否已在该节点应用 */
     private Integer applied;
 
+    /** 到组网内其他节点的延迟 (key=wg:{netId}:{nodeId}:{ip}) */
+    private java.util.Map<String, Object> latencies;
+
 }

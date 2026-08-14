@@ -18,7 +18,8 @@ import {
   getNodeList, 
   updateNode, 
   deleteNode,
-  getNodeInstallCommand
+  getNodeInstallCommand,
+  updateNodeAgent
 } from "@/api";
 
 interface Node {
@@ -45,6 +46,7 @@ interface Node {
     uptime: number;
   } | null;
   copyLoading?: boolean;
+  updateLoading?: boolean;
 }
 
 interface NodeForm {
@@ -507,6 +509,27 @@ export default function NodePage() {
     }
   };
 
+  // 在线更新节点代理
+  const handleUpdateAgent = async (node: Node) => {
+    setNodeList(prev => prev.map(n => 
+      n.id === node.id ? { ...n, updateLoading: true } : n
+    ));
+    try {
+      const res = await updateNodeAgent(node.id);
+      if (res.code === 0) {
+        toast.success(res.msg || '更新指令已下发');
+      } else {
+        toast.error(res.msg || '更新失败');
+      }
+    } catch (error) {
+      toast.error('网络错误，请重试');
+    } finally {
+      setNodeList(prev => prev.map(n => 
+        n.id === node.id ? { ...n, updateLoading: false } : n
+      ));
+    }
+  };
+
   // 手动复制安装命令
   const handleManualCopy = async () => {
     try {
@@ -817,6 +840,18 @@ export default function NodePage() {
                       >
                         安装
                       </Button>
+                      {node.connectionStatus === 'online' && (
+                        <Button
+                          size="sm"
+                          variant="flat"
+                          color="warning"
+                          onPress={() => handleUpdateAgent(node)}
+                          isLoading={node.updateLoading}
+                          className="flex-1 min-h-8"
+                        >
+                          更新
+                        </Button>
+                      )}
                       <Button
                         size="sm"
                         variant="flat"

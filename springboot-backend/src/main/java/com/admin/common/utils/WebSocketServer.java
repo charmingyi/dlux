@@ -94,7 +94,6 @@ public class WebSocketServer extends TextWebSocketHandler {
                         String requestId = responseJson.getString("requestId");
                         String responseMessage = responseJson.getString("message");
                         String responseType = responseJson.getString("type");
-                        JSONObject responseData = responseJson.getJSONObject("data");
                         
                         if (requestId != null) {
                             CompletableFuture<GostDto> future = pendingRequests.remove(requestId);
@@ -102,7 +101,8 @@ public class WebSocketServer extends TextWebSocketHandler {
                             if (future != null) {
                                 GostDto result = new GostDto();
                                 
-                                // 根据响应类型处理不同的数据
+                                // 根据响应类型处理不同的数据 (data 可能是对象或数组)
+                                Object responseData = responseJson.get("data");
                                 if ("PingResponse".equals(responseType) && responseData != null) {
                                     // 特殊处理ping响应，将完整的响应数据返回
                                     result.setMsg(responseMessage != null ? responseMessage : "OK");

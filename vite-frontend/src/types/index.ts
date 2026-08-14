@@ -32,6 +32,7 @@ export interface WgMember {
   hub: number;
   publicKey?: string;
   applied?: number;
+  latencies?: Record<string, { key: string; addr: string; ms: number; up: boolean; ts: number }>;
 }
 
 export interface WgNetwork {

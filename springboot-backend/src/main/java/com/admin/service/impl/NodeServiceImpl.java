@@ -7,6 +7,7 @@ import com.admin.common.dto.NodeDto;
 import com.admin.common.dto.NodeListDto;
 import com.admin.common.dto.NodeUpdateDto;
 import com.admin.common.lang.R;
+import com.admin.common.utils.GostUtil;
 import com.admin.common.utils.LatencyCache;
 import com.admin.common.utils.WebSocketServer;
 import com.admin.entity.Node;
@@ -166,6 +167,22 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
                .append(" -s ").append(node.getSecret());
 
         return R.ok(command.toString());
+    }
+
+    @Override
+    public R updateAgent(Long id) {
+        Node node = this.getById(id);
+        if (node == null) {
+            return R.err(ERROR_NODE_NOT_FOUND);
+        }
+        if (node.getStatus() == null || node.getStatus() != 1) {
+            return R.err("节点不在线, 无法在线更新");
+        }
+        GostDto result = GostUtil.UpdateAgent(node.getId());
+        if (result == null || !"OK".equals(result.getMsg())) {
+            return R.err(result == null ? "节点无响应" : result.getMsg());
+        }
+        return R.ok("更新指令已下发, 节点将自动下载并重启");
     }
 
     private Node buildNewNode(NodeDto nodeDto) {

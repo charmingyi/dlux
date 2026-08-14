@@ -217,19 +217,31 @@ export default function WgPage() {
                 </div>
                 <div className="space-y-1">
                   {network.members.map(member => (
-                    <div key={member.id} className="flex items-center justify-between bg-default-100 dark:bg-default-50 rounded-lg px-3 py-1.5">
-                      <div className="flex items-center gap-2">
-                        <Chip size="sm" color={member.nodeStatus === 1 ? 'success' : 'danger'} variant="dot">
-                          {member.nodeName}
-                        </Chip>
-                        {member.hub === 1 && <Chip size="sm" color="warning" variant="flat">中心</Chip>}
-                        <span className="text-default-500 text-xs">{member.ip}</span>
+                    <div key={member.id} className="bg-default-100 dark:bg-default-50 rounded-lg px-3 py-1.5">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Chip size="sm" color={member.nodeStatus === 1 ? 'success' : 'danger'} variant="dot">
+                            {member.nodeName}
+                          </Chip>
+                          {member.hub === 1 && <Chip size="sm" color="warning" variant="flat">中心</Chip>}
+                          <span className="text-default-500 text-xs">{member.ip}</span>
+                        </div>
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className="text-default-400 font-mono max-w-[140px] truncate">
+                            {member.publicKey ? member.publicKey.slice(0, 16) + '...' : '未同步'}
+                          </span>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-2 text-xs">
-                        <span className="text-default-400 font-mono max-w-[140px] truncate">
-                          {member.publicKey ? member.publicKey.slice(0, 16) + '...' : '未同步'}
-                        </span>
-                      </div>
+                      {member.latencies && Object.keys(member.latencies).length > 0 && (
+                        <div className="flex flex-wrap gap-1.5 mt-1.5 pl-1">
+                          {Object.values(member.latencies).map((p: any, i: number) => (
+                            <Chip key={i} size="sm" variant="flat"
+                              color={!p.up ? 'danger' : p.ms < 50 ? 'success' : p.ms < 100 ? 'primary' : p.ms < 200 ? 'warning' : 'danger'}>
+                              → {p.addr} {p.up ? `${p.ms.toFixed(0)}ms` : '不可达'}
+                            </Chip>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>

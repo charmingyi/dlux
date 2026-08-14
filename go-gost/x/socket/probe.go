@@ -3,6 +3,7 @@ package socket
 import (
 	"context"
 	"net"
+	"os/exec"
 	"sort"
 	"sync"
 	"time"
@@ -131,6 +132,40 @@ func tcpProbeOnce(addr string, timeout time.Duration) (float64, bool) {
 	}
 	conn.Close()
 	return float64(time.Since(start).Microseconds()) / 1000.0, true
+}
+
+// PingIpsRequest ICMP ping 列表请求
+type PingIpsRequest struct {
+	Ips []string `json:"ips"`
+}
+
+// PingIpsResult ICMP ping 单结果
+type PingIpsResult struct {
+	IP string  `json:"ip"`
+	Ms float64 `json:"ms"`
+	Up bool    `json:"up"`
+}
+
+// PingIps 对指定IP列表执行ICMP ping(依赖系统ping命令, 需root)
+func PingIps(req *PingIpsRequest) []PingIpsResult {
+	results := make([]PingIpsResult, 0, len(req.Ips))
+	for _, ip := range req.Ips {
+		if ip == "" {
+			continue
+		}
+		ms, up := icmpPingOnce(ip)
+		results = append(results, PingIpsResult{IP: ip, Ms: ms, Up: up})
+	}
+	return results
+}
+
+// icmpPingOnce 系统ping一次, 返回耗时与可达性
+func icmpPingOnce(ip string) (float64, bool) {
+	start := time.Now()
+	cmd := exec.Command("ping", "-c", "1", "-W", "1", ip)
+	err := cmd.Run()
+	ms := float64(time.Since(start).Microseconds()) / 1000.0
+	return ms, err == nil
 }
 
 // GetLatency 返回指定地址最近延迟(毫秒), 不存在或不可用返回false
