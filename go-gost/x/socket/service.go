@@ -38,6 +38,9 @@ func createServices(req createServicesRequest) error {
 
 		svc, err := parser.ParseService(&serviceConfig)
 		if err != nil {
+			for _, parsed := range parsedServices {
+				parsed.service.Close()
+			}
 			return errors.New("create service " + name + " failed: " + err.Error())
 		}
 

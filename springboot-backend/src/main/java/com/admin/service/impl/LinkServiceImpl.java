@@ -291,11 +291,6 @@ public class LinkServiceImpl extends ServiceImpl<LinkMapper, Link> implements Li
                 return R.err(String.format(ERROR_NODE_OFFLINE, node.getName()));
             }
 
-            Integer port = allocateRelayPort(nodeId, link.getId());
-            if (port == null) {
-                return R.err(String.format(ERROR_PORT_FULL, node.getName()));
-            }
-
             String bindAddr = "0.0.0.0";
             String protocol = "tcp";
             if ("wg".equals(link.getTransport())) {
@@ -309,34 +304,72 @@ public class LinkServiceImpl extends ServiceImpl<LinkMapper, Link> implements Li
                 protocol = "tls";
             }
 
-            LinkRelay relay = new LinkRelay();
-            relay.setLinkId(link.getId().intValue());
-            relay.setNodeId(nodeId);
-            relay.setPort(port);
-            relay.setAddr(bindAddr);
-            relay.setProtocol(protocol);
-            long now = System.currentTimeMillis();
-            relay.setCreatedTime(now);
-            relay.setUpdatedTime(now);
-            relay.setStatus(1);
-            linkRelayMapper.insert(relay);
-            newRelays.add(relay);
-
-            GostDto result = GostUtil.AddRelayService(nodeId.longValue(),
-                    buildRelayName(link.getId(), nodeId), relay.getAddr() + ":" + relay.getPort(), protocol);
-            if (!isGostOperationSuccess(result)) {
-                for (LinkRelay created : newRelays) {
-                    try {
-                        GostUtil.DeleteRelayService(created.getNodeId().longValue(),
-                                buildRelayName(link.getId(), created.getNodeId()));
-                    } catch (Exception ignored) {
-                    }
-                    linkRelayMapper.deleteById(created.getId());
+            Set<Integer> rejectedPorts = new HashSet<>();
+            while (true) {
+                Integer port = allocateRelayPort(nodeId, link.getId(), rejectedPorts);
+                if (port == null) {
+                    cleanupCreatedRelays(link.getId(), newRelays);
+                    return R.err(String.format(ERROR_PORT_FULL, node.getName()));
                 }
-                return R.err("中继服务创建失败: " + result.getMsg());
+
+                LinkRelay relay = new LinkRelay();
+                relay.setLinkId(link.getId().intValue());
+                relay.setNodeId(nodeId);
+                relay.setPort(port);
+                relay.setAddr(bindAddr);
+                relay.setProtocol(protocol);
+                long now = System.currentTimeMillis();
+                relay.setCreatedTime(now);
+                relay.setUpdatedTime(now);
+                relay.setStatus(1);
+
+                GostDto result = GostUtil.AddRelayService(nodeId.longValue(),
+                        buildRelayName(link.getId(), nodeId), relay.getAddr() + ":" + relay.getPort(), protocol);
+                if (isGostOperationSuccess(result)) {
+                    try {
+                        linkRelayMapper.insert(relay);
+                        newRelays.add(relay);
+                        break;
+                    } catch (Exception e) {
+                        try {
+                            GostUtil.DeleteRelayService(nodeId.longValue(), buildRelayName(link.getId(), nodeId));
+                        } catch (Exception ignored) {
+                        }
+                        cleanupCreatedRelays(link.getId(), newRelays);
+                        return R.err("中继端口保存失败: " + e.getMessage());
+                    }
+                }
+
+                if (isAddressAlreadyInUse(result)) {
+                    rejectedPorts.add(port);
+                    log.info("节点 {} 端口 {} 已被节点侧占用，继续尝试下一端口", node.getName(), port);
+                    continue;
+                }
+
+                cleanupCreatedRelays(link.getId(), newRelays);
+                return R.err("中继服务创建失败: " + (result == null ? "节点无响应" : result.getMsg()));
             }
         }
         return R.ok();
+    }
+
+    private void cleanupCreatedRelays(Long linkId, List<LinkRelay> relays) {
+        for (LinkRelay created : relays) {
+            try {
+                GostUtil.DeleteRelayService(created.getNodeId().longValue(),
+                        buildRelayName(linkId, created.getNodeId()));
+            } catch (Exception ignored) {
+            }
+            linkRelayMapper.deleteById(created.getId());
+        }
+    }
+
+    private boolean isAddressAlreadyInUse(GostDto result) {
+        if (result == null || result.getMsg() == null) {
+            return false;
+        }
+        String message = result.getMsg().toLowerCase();
+        return message.contains("address already in use") || message.contains("bind:");
     }
 
     /** 下发链到入口节点 */
@@ -438,7 +471,7 @@ public class LinkServiceImpl extends ServiceImpl<LinkMapper, Link> implements Li
     }
 
     /** 在节点端口范围内分配中继端口 */
-    private Integer allocateRelayPort(Integer nodeId, Long excludeLinkId) {
+    private Integer allocateRelayPort(Integer nodeId, Long excludeLinkId, Set<Integer> excludedPorts) {
         Node node = nodeService.getById(nodeId);
         if (node == null || node.getPortSta() == null || node.getPortEnd() == null) {
             return null;
@@ -467,7 +500,7 @@ public class LinkServiceImpl extends ServiceImpl<LinkMapper, Link> implements Li
             used.add(relay.getPort());
         }
         for (int port = node.getPortSta(); port <= node.getPortEnd(); port++) {
-            if (!used.contains(port)) {
+            if (!used.contains(port) && !excludedPorts.contains(port)) {
                 return port;
             }
         }
