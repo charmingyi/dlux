@@ -329,7 +329,9 @@ public class GostUtil {
                                                   Integer maxFails, String failTimeout, String interfaceName) {
         JSONObject service = new JSONObject();
         service.put("name", name + "_" + protocol);
-        service.put("addr", "0.0.0.0:" + in_port);
+        // Listen on the unspecified address so IPv6-only entry hostnames work.
+        // On Linux with net.ipv6.bindv6only=0 this also accepts IPv4 traffic.
+        service.put("addr", ":" + in_port);
 
         if (StringUtils.isNotBlank(interfaceName)) {
             JSONObject metadata = new JSONObject();
