@@ -563,6 +563,17 @@ func (w *WebSocketReporter) routeCommand(cmd CommandMessage) {
 	case "WgApply":
 		err = w.handleWgApply(cmd.Data)
 		response.Type = "WgApplyResponse"
+		if err == nil {
+			// 将生成的公钥回传给面板
+			if name := wgApplyName(cmd.Data); name != "" {
+				if pk := w.GetWgPublicKey(name); pk != "" {
+					response.Data = map[string]interface{}{
+						"publicKey": pk,
+						"interface": ifaceName(name),
+					}
+				}
+			}
+		}
 	case "WgRemove":
 		err = w.handleWgRemove(cmd.Data)
 		response.Type = "WgRemoveResponse"
@@ -1112,6 +1123,24 @@ func (w *WebSocketReporter) handleWgApply(data interface{}) error {
 	// 将公钥返回给面板
 	w.lastWgPublicKeys.Store(req.Name, resp.PublicKey)
 	return nil
+}
+
+// wgApplyName 从命令数据中提取组网名称
+func wgApplyName(data interface{}) string {
+	if m, ok := data.(map[string]interface{}); ok {
+		if name, ok := m["name"].(string); ok {
+			return name
+		}
+	}
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return ""
+	}
+	var req WgApplyRequest
+	if err := json.Unmarshal(jsonData, &req); err != nil {
+		return ""
+	}
+	return req.Name
 }
 
 // handleWgRemove 移除WireGuard组网配置
