@@ -393,7 +393,12 @@ public class LinkServiceImpl extends ServiceImpl<LinkMapper, Link> implements Li
     /** 校验线路合法性 */
     private R validateLink(LinkDto linkDto, List<Integer> nodeOrder) {
         if (nodeOrder.size() < 2) {
-            return R.err("线路至少需要入口和出口两个节点(单节点请使用直连模式)");
+            // 入口=出口且无中间节点: 直连线路(入口直接访问目标)
+            boolean direct = Objects.equals(linkDto.getEntryNodeId(), linkDto.getExitNodeId())
+                    && (linkDto.getHopNodeIds() == null || linkDto.getHopNodeIds().isEmpty());
+            if (!direct) {
+                return R.err("线路至少需要入口和出口两个节点(入口=出口且无中间节点时为直连线路)");
+            }
         }
         Set<Integer> unique = new HashSet<>(nodeOrder);
         if (unique.size() != nodeOrder.size()) {
