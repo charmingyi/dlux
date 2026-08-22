@@ -1,4 +1,5 @@
 import * as React from "react";
+import ReactDOM from "react-dom";
 import clsx from "clsx";
 import { IconX, IconCopy, IconCheck, IconAlert } from "@/components/icons";
 
@@ -457,6 +458,10 @@ export const ConfirmModal: React.FC<{
 
 /* ============================ Dropdown ============================ */
 
+/**
+ * 下拉菜单: 菜单通过 portal 渲染到 body 并使用 fixed 定位,
+ * 避免被表格的 overflow-hidden / overflow-x-auto 容器裁剪。
+ */
 export const Dropdown: React.FC<{
   trigger: React.ReactNode;
   children: React.ReactNode;
@@ -464,32 +469,73 @@ export const Dropdown: React.FC<{
   width?: string;
 }> = ({ trigger, children, align = "right", width = "w-44" }) => {
   const ref = React.useRef<HTMLDivElement>(null);
+  const menuRef = React.useRef<HTMLDivElement>(null);
   const [open, setOpen] = React.useState(false);
+  const [pos, setPos] = React.useState<{ top: number; left: number } | null>(null);
+
+  const openMenu = () => {
+    const rect = ref.current?.getBoundingClientRect();
+    if (!rect) return;
+    // 预估菜单宽度(w-44=176), 打开后按真实尺寸再校正
+    const estW = 176;
+    let left = align === "right" ? rect.right - estW : rect.left;
+    left = Math.max(8, Math.min(left, window.innerWidth - estW - 8));
+    let top = rect.bottom + 6;
+    if (top > window.innerHeight - 160) {
+      // 靠近底部时向上弹出
+      top = Math.max(8, rect.top - 170);
+    }
+    setPos({ top, left });
+    setOpen(true);
+  };
+
+  // 打开后按菜单真实宽度校正水平位置
+  React.useEffect(() => {
+    if (!open || !pos || !menuRef.current) return;
+    const mw = menuRef.current.offsetWidth;
+    const rect = ref.current?.getBoundingClientRect();
+    if (!rect) return;
+    let left = align === "right" ? rect.right - mw : rect.left;
+    left = Math.max(8, Math.min(left, window.innerWidth - mw - 8));
+    setPos({ top: pos.top, left });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   React.useEffect(() => {
     if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
     };
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
   }, [open]);
 
   return (
     <div ref={ref} className="relative">
-      <div onClick={() => setOpen(!open)}>{trigger}</div>
-      {open && (
-        <div
-          className={clsx(
-            "absolute z-40 mt-1.5 py-1 bg-surface border border-line rounded-xl shadow-pop animate-scale-in",
-            align === "right" ? "right-0" : "left-0",
-            width
-          )}
-          onClick={() => setOpen(false)}
-        >
-          {children}
-        </div>
-      )}
+      <div
+        onClick={() => {
+          if (open) setOpen(false);
+          else openMenu();
+        }}
+      >
+        {trigger}
+      </div>
+      {open &&
+        pos &&
+        ReactDOM.createPortal(
+          <>
+            <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+            <div
+              ref={menuRef}
+              className={clsx("fixed z-50 py-1 bg-surface border border-line rounded-xl shadow-pop animate-scale-in", width)}
+              style={{ top: pos.top, left: pos.left }}
+              onClick={() => setOpen(false)}
+            >
+              {children}
+            </div>
+          </>,
+          document.body
+        )}
     </div>
   );
 };
