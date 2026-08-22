@@ -8,6 +8,9 @@ import com.admin.common.dto.ForwardWithGroupDto;
 import com.admin.common.dto.GostDto;
 import com.admin.common.dto.GroupDto;
 import com.admin.common.dto.LinkDto;
+import com.admin.common.dto.QuickForwardDto;
+import com.admin.common.dto.WgMemberDto;
+import com.admin.common.dto.WgNetworkDto;
 import com.admin.common.lang.R;
 import com.admin.common.utils.GostUtil;
 import com.admin.common.utils.LatencyCache;
@@ -15,6 +18,7 @@ import com.admin.common.utils.WebSocketServer;
 import com.admin.entity.*;
 import com.admin.mapper.ForwardMapper;
 import com.admin.mapper.LinkMapper;
+import com.admin.mapper.NodeWgMapper;
 import com.admin.service.*;
 import com.alibaba.fastjson.JSONObject;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
@@ -61,6 +65,13 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
 
     @Resource
     private LinkMapper linkMapper;
+
+    @Resource
+    private NodeWgMapper nodeWgMapper;
+
+    @Resource
+    @Lazy
+    private WgNetworkService wgNetworkService;
 
     @Override
     public R createForward(ForwardDto forwardDto) {
@@ -227,6 +238,212 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
             log.error("一体化创建转发失败", e);
             return R.err("创建失败: " + e.getMessage());
         }
+    }
+
+    @Override
+    public R quickCreateForward(QuickForwardDto dto) {
+        // 1. 规整落地节点: 去重、去掉入口本身; 结果为空 => 直连模式
+        List<Integer> exits = new ArrayList<>();
+        if (dto.getExitNodeIds() != null) {
+            for (Integer exitId : dto.getExitNodeIds()) {
+                if (exitId == null) continue;
+                if (exitId.equals(dto.getEntryNodeId())) continue;
+                if (!exits.contains(exitId)) exits.add(exitId);
+            }
+        }
+        boolean direct = exits.isEmpty();
+
+        Node entry = nodeService.getById(dto.getEntryNodeId());
+        if (entry == null) return R.err("入口节点不存在");
+        if (!direct) {
+            for (Integer exitId : exits) {
+                if (nodeService.getById(exitId) == null) {
+                    return R.err("落地节点不存在: #" + exitId);
+                }
+            }
+        }
+
+        // 2. 解析组网(直连不需要)
+        Integer wgNetworkId = dto.getWgNetworkId();
+        String usedNetworkName = null;
+        boolean networkCreated = false;
+        if (!direct) {
+            List<Node> exitNodes = new ArrayList<>();
+            for (Integer exitId : exits) {
+                exitNodes.add(nodeService.getById(exitId));
+            }
+            if (wgNetworkId != null) {
+                WgNetwork wg = wgNetworkService.getById(wgNetworkId);
+                if (wg == null) return R.err("指定的组网不存在");
+                wgNetworkId = wg.getId().intValue();
+                usedNetworkName = wg.getName();
+                R memberCheck = ensureMembers(wgNetworkId.longValue(), entry, exitNodes);
+                if (memberCheck.getCode() != 0) return memberCheck;
+            } else {
+                // 自动寻找包含入口和全部落地的组网
+                List<WgNetwork> networks = wgNetworkService.list(new QueryWrapper<WgNetwork>().eq("status", 1));
+                WgNetwork matched = null;
+                for (WgNetwork wg : networks) {
+                    if (containsAllMembers(wg.getId(), entry.getId().intValue(), exits)) {
+                        matched = wg;
+                        break;
+                    }
+                }
+                if (matched != null) {
+                    wgNetworkId = matched.getId().intValue();
+                    usedNetworkName = matched.getName();
+                } else if (networks.isEmpty()) {
+                    // 第一个组网: 自动创建并同步
+                    R created = autoCreateNetwork(entry, exitNodes);
+                    if (created.getCode() != 0) return created;
+                    wgNetworkId = (Integer) ((Map<String, Object>) created.getData()).get("wgNetworkId");
+                    usedNetworkName = (String) ((Map<String, Object>) created.getData()).get("networkName");
+                    networkCreated = true;
+                } else {
+                    String exitNames = exitNodes.stream().map(Node::getName).collect(java.util.stream.Collectors.joining("、"));
+                    return R.err("入口 " + entry.getName() + " 与落地 " + exitNames
+                            + " 不在同一组网内。请先在「WireGuard 组网」把它们加入同一网络（或新建组网），再使用快速创建。");
+                }
+            }
+        }
+
+        // 3. 组装一体化创建
+        ForwardPlanDto plan = new ForwardPlanDto();
+        plan.setName(dto.getName().trim());
+        plan.setEntryNodeId(dto.getEntryNodeId());
+        plan.setWgNetworkId(direct ? null : wgNetworkId);
+        List<ForwardPlanRouteDto> routes = new ArrayList<>();
+        for (Integer exitId : exits) {
+            ForwardPlanRouteDto route = new ForwardPlanRouteDto();
+            route.setExitNodeId(exitId);
+            route.setWeight(1);
+            route.setTransport(direct ? "tcp" : "wg");
+            routes.add(route);
+        }
+        if (routes.isEmpty()) {
+            // 直连: 出口=入口
+            ForwardPlanRouteDto route = new ForwardPlanRouteDto();
+            route.setExitNodeId(dto.getEntryNodeId());
+            route.setWeight(1);
+            route.setTransport("tcp");
+            routes.add(route);
+        }
+        plan.setRoutes(routes);
+        plan.setGroupStrategy(dto.getGroupStrategy() == null ? "fifo" : dto.getGroupStrategy());
+        plan.setRemoteAddr(dto.getRemoteAddr());
+        plan.setTargetStrategy(dto.getTargetStrategy() == null ? "fifo" : dto.getTargetStrategy());
+        plan.setSpeedId(dto.getSpeedId());
+        plan.setInPort(dto.getInPort());
+
+        R result = createForwardPlan(plan);
+        if (result.getCode() == 0 && result.getData() instanceof Map) {
+            Map<String, Object> data = (Map<String, Object>) result.getData();
+            data.put("direct", direct);
+            data.put("wgNetworkId", wgNetworkId);
+            data.put("wgNetworkName", usedNetworkName);
+            data.put("networkCreated", networkCreated);
+        }
+        return result;
+    }
+
+    /** 指定组网时, 把缺失的成员自动补进去并同步 */
+    @SuppressWarnings("unchecked")
+    private R ensureMembers(Long networkId, Node entry, List<Node> exitNodes) {
+        List<NodeWg> existing = nodeWgMapper.selectList(new QueryWrapper<NodeWg>().eq("wg_network_id", networkId));
+        java.util.Set<Integer> memberIds = new java.util.HashSet<>();
+        for (NodeWg nw : existing) memberIds.add(nw.getNodeId());
+
+        boolean missing = !memberIds.contains(entry.getId());
+        for (Node n : exitNodes) {
+            if (!memberIds.contains(n.getId())) missing = true;
+        }
+        if (!missing) return R.ok();
+
+        WgNetwork wg = wgNetworkService.getById(networkId);
+        if (wg == null) return R.err("指定的组网不存在");
+
+        WgNetworkDto update = new WgNetworkDto();
+        update.setName(wg.getName());
+        update.setSubnet(wg.getSubnet());
+        update.setMode(wg.getMode());
+        update.setListenPort(wg.getListenPort());
+        update.setMtu(wg.getMtu());
+        List<WgMemberDto> members = new ArrayList<>();
+        java.util.Map<Integer, Integer> hubMap = new java.util.HashMap<>();
+        for (NodeWg nw : existing) hubMap.put(nw.getNodeId(), nw.getHub());
+        java.util.LinkedHashSet<Integer> allIds = new java.util.LinkedHashSet<>(memberIds);
+        allIds.add(entry.getId().intValue());
+        for (Node n : exitNodes) allIds.add(n.getId().intValue());
+        boolean hasHub = hubMap.containsValue(1);
+        for (Integer nodeId : allIds) {
+            WgMemberDto m = new WgMemberDto();
+            m.setNodeId(nodeId);
+            m.setHub(hubMap.getOrDefault(nodeId, (!hasHub && "hub".equals(wg.getMode()) && nodeId.equals(entry.getId())) ? 1 : 0));
+            members.add(m);
+        }
+        update.setMembers(members);
+        return wgNetworkService.updateNetwork(networkId, update);
+    }
+
+    private boolean containsAllMembers(Long networkId, Integer entryNodeId, List<Integer> exits) {
+        List<NodeWg> members = nodeWgMapper.selectList(new QueryWrapper<NodeWg>().eq("wg_network_id", networkId));
+        java.util.Set<Integer> ids = new java.util.HashSet<>();
+        for (NodeWg nw : members) ids.add(nw.getNodeId());
+        if (!ids.contains(entryNodeId)) return false;
+        for (Integer exitId : exits) {
+            if (!ids.contains(exitId)) return false;
+        }
+        return true;
+    }
+
+    /** 自动创建默认组网: 分配空闲网段与端口, 成员=入口+全部落地, 创建后立即同步 */
+    private R autoCreateNetwork(Node entry, List<Node> exitNodes) {
+        List<WgNetwork> networks = wgNetworkService.list(new QueryWrapper<WgNetwork>().eq("status", 1));
+        java.util.Set<String> usedSubnets = new java.util.HashSet<>();
+        java.util.Set<Integer> usedPorts = new java.util.HashSet<>();
+        for (WgNetwork wg : networks) {
+            usedSubnets.add(wg.getSubnet());
+            usedPorts.add(wg.getListenPort());
+        }
+        String subnet = null;
+        for (int i = 0; i < 200; i++) {
+            String candidate = String.format("10.10.%d.0/24", i);
+            if (!usedSubnets.contains(candidate)) {
+                subnet = candidate;
+                break;
+            }
+        }
+        if (subnet == null) return R.err("自动分配组网网段失败, 请手动创建组网");
+        int port = 51820;
+        while (usedPorts.contains(port)) port++;
+
+        WgNetworkDto dto = new WgNetworkDto();
+        dto.setName("默认组网");
+        dto.setSubnet(subnet);
+        dto.setMode("mesh");
+        dto.setListenPort(port);
+        dto.setMtu(1420);
+        List<WgMemberDto> members = new ArrayList<>();
+        WgMemberDto entryMember = new WgMemberDto();
+        entryMember.setNodeId(entry.getId().intValue());
+        entryMember.setHub(0);
+        members.add(entryMember);
+        for (Node n : exitNodes) {
+            WgMemberDto m = new WgMemberDto();
+            m.setNodeId(n.getId().intValue());
+            m.setHub(0);
+            members.add(m);
+        }
+        dto.setMembers(members);
+
+        R created = wgNetworkService.createNetwork(dto);
+        if (created.getCode() != 0) return created;
+        WgNetwork saved = wgNetworkService.getOne(new QueryWrapper<WgNetwork>().eq("name", "默认组网").orderByDesc("id").last("LIMIT 1"));
+        if (saved == null) return R.err("自动创建组网失败, 请手动创建");
+        Map<String, Object> info = new HashMap<>();
+        info.put("wgNetworkId", saved.getId().intValue());
+        info.put("networkName", saved.getName());
+        return R.ok(info);
     }
 
     @Override

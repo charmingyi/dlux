@@ -22,6 +22,9 @@ public interface ForwardService extends IService<Forward> {
     /** 一次性创建线路、负载均衡组和转发任务。 */
     R createForwardPlan(ForwardPlanDto planDto);
 
+    /** 快速创建: 入口+落地+目标, 组网/线路/组自动解决(主流面板式) */
+    R quickCreateForward(com.admin.common.dto.QuickForwardDto dto);
+
     R getAllForwards();
 
     R updateForward(ForwardUpdateDto forwardUpdateDto);

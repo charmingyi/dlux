@@ -44,6 +44,7 @@ import {
 import {
   createForward,
   createForwardPlan,
+  quickCreateForward,
   getForwardList,
   updateForward,
   deleteForward,
@@ -60,9 +61,10 @@ import {
   getGroupList,
   getSpeedLimitList,
   getWgNetworkList,
+  getNodeList,
 } from "@/api";
 import { formatBytes, formatLatency, latencyTone, strategyLabel } from "@/utils/format";
-import type { ForwardItem, GroupItem, SpeedLimit, WgNetwork } from "@/types";
+import type { ForwardItem, GroupItem, SpeedLimit, WgNetwork, Node as NodeType } from "@/types";
 
 const TARGET_STRATEGIES = [
   { value: "round", label: "轮询" },
@@ -151,8 +153,15 @@ export default function ForwardPage() {
   const [diagResults, setDiagResults] = useState<DiagResult[]>([]);
   const [busyId, setBusyId] = useState<number | null>(null);
 
-  const [createMode, setCreateMode] = useState<"quick" | "existing">("quick");
+  const [createMode, setCreateMode] = useState<"fast" | "advanced" | "existing">("fast");
   const [quickTopology, setQuickTopology] = useState<QuickTopology>(defaultQuickTopology);
+
+  // 快速创建状态
+  const [nodeOptions, setNodeOptions] = useState<NodeType[]>([]);
+  const [fastEntry, setFastEntry] = useState<number | null>(null);
+  const [fastExits, setFastExits] = useState<number[]>([]);
+  const [fastDirect, setFastDirect] = useState<"relay" | "direct">("relay");
+  const [fastGroupStrategy, setFastGroupStrategy] = useState("fifo");
 
   const [importOpen, setImportOpen] = useState(false);
   const [importText, setImportText] = useState("");
@@ -172,10 +181,16 @@ export default function ForwardPage() {
 
   const loadOptions = useCallback(async () => {
     try {
-      const [groupRes, speedRes, wgRes] = await Promise.all([getGroupList(), getSpeedLimitList(), getWgNetworkList()]);
+      const [groupRes, speedRes, wgRes, nodeRes] = await Promise.all([
+        getGroupList(),
+        getSpeedLimitList(),
+        getWgNetworkList(),
+        getNodeList(),
+      ]);
       if (groupRes.code === 0) setGroupOptions(groupRes.data || []);
       if (speedRes.code === 0) setSpeedOptions(speedRes.data || []);
       if (wgRes.code === 0) setWgOptions(wgRes.data || []);
+      if (nodeRes.code === 0) setNodeOptions(nodeRes.data || []);
     } catch {
       // 静默
     }
@@ -232,7 +247,11 @@ export default function ForwardPage() {
   const openCreate = () => {
     setForm(defaultForm);
     setQuickTopology(defaultQuickTopology);
-    setCreateMode("quick");
+    setCreateMode("fast");
+    setFastEntry(null);
+    setFastExits([]);
+    setFastDirect("relay");
+    setFastGroupStrategy("fifo");
     setIsEdit(false);
     setErrors({});
     setDialogOpen(true);
@@ -258,7 +277,11 @@ export default function ForwardPage() {
     const errs: Record<string, string> = {};
     if (!form.name.trim()) errs.name = "请输入转发名称";
     if ((isEdit || createMode === "existing") && form.groupId == null) errs.groupId = "请选择负载均衡组";
-    if (!isEdit && createMode === "quick") {
+    if (!isEdit && createMode === "fast") {
+      if (fastEntry == null) errs.fastEntry = "请选择入口节点";
+      if (fastDirect === "relay" && fastExits.length === 0) errs.fastExits = "请选择至少一个落地节点";
+    }
+    if (!isEdit && createMode === "advanced") {
       if (quickTopology.wgNetworkId == null) errs.wgNetworkId = "请选择 WireGuard 组网";
       if (quickTopology.entryNodeId == null) errs.entryNodeId = "请选择入口节点";
       if (!quickTopology.routes.length) errs.routes = "至少添加一条线路";
@@ -303,7 +326,18 @@ export default function ForwardPage() {
       };
       const res = isEdit
         ? await updateForward({ id: form.id, ...payload })
-        : createMode === "quick"
+        : createMode === "fast"
+        ? await quickCreateForward({
+            name: form.name,
+            entryNodeId: fastEntry,
+            exitNodeIds: fastDirect === "direct" ? [] : fastExits,
+            remoteAddr: payload.remoteAddr,
+            inPort: form.inPort,
+            groupStrategy: fastGroupStrategy,
+            targetStrategy: payload.targetStrategy,
+            speedId: payload.speedId,
+          })
+        : createMode === "advanced"
         ? await createForwardPlan({
             name: form.name,
             entryNodeId: quickTopology.entryNodeId,
@@ -324,9 +358,18 @@ export default function ForwardPage() {
           })
         : await createForward(payload);
       if (res.code === 0) {
-        toast.success(
-          isEdit ? "转发更新成功" : createMode === "quick" ? "组网线路、路由组和转发已一体化创建" : "转发创建成功"
-        );
+        if (!isEdit && createMode === "fast") {
+          const d = res.data || {};
+          const parts: string[] = [];
+          if (d.networkCreated) parts.push(`已自动创建组网「${d.wgNetworkName}」并同步`);
+          else if (d.direct) parts.push("直连模式");
+          else parts.push(`使用组网「${d.wgNetworkName}」`);
+          toast.success(`转发创建成功（${parts.join("，")}）`);
+        } else {
+          toast.success(
+            isEdit ? "转发更新成功" : createMode === "advanced" ? "组网线路、路由组和转发已一体化创建" : "转发创建成功"
+          );
+        }
         setDialogOpen(false);
         loadForwards();
         loadOptions();
@@ -769,7 +812,7 @@ export default function ForwardPage() {
           <>
             <Button onClick={() => setDialogOpen(false)}>取消</Button>
             <Button variant="primary" onClick={handleSubmit} loading={submitLoading}>
-              {isEdit ? "保存并重下发" : createMode === "quick" ? "创建完整转发任务" : "创建转发"}
+              {isEdit ? "保存并重下发" : createMode === "fast" ? "立即创建" : createMode === "advanced" ? "创建完整转发任务" : "创建转发"}
             </Button>
           </>
         }
@@ -780,8 +823,9 @@ export default function ForwardPage() {
               value={createMode}
               onChange={setCreateMode}
               options={[
-                { value: "quick", label: "一体化创建（推荐）" },
-                { value: "existing", label: "使用已有路由组" },
+                { value: "fast", label: "快速创建" },
+                { value: "advanced", label: "高级编排" },
+                { value: "existing", label: "已有路由组" },
               ]}
             />
           )}
@@ -805,7 +849,113 @@ export default function ForwardPage() {
             />
           </div>
 
-          {!isEdit && createMode === "quick" ? (
+          {!isEdit && createMode === "fast" ? (
+            <div className="space-y-4 rounded-xl border border-accent/30 bg-accent-soft/30 p-4">
+              <p className="text-xs text-muted leading-relaxed">
+                三步完成：选入口 → 选落地 → 填目标。WireGuard 组网、线路和负载均衡由面板自动处理，无需手动配置。
+              </p>
+
+              {/* 入口 */}
+              <Select
+                label="① 入口节点（客户端连接的服务器）"
+                value={fastEntry != null ? String(fastEntry) : ""}
+                onChange={(e) => {
+                  const id = e.target.value ? Number(e.target.value) : null;
+                  setFastEntry(id);
+                  setFastExits((prev) => prev.filter((x) => x !== id));
+                }}
+                error={errors.fastEntry}
+              >
+                <option value="">选择入口节点</option>
+                {nodeOptions.map((n) => (
+                  <option key={n.id} value={n.id}>
+                    {n.name} · {n.serverIp} · {n.status === 1 ? "在线" : "离线"}
+                  </option>
+                ))}
+              </Select>
+
+              {/* 落地方式 */}
+              <div>
+                <div className="mb-1.5 text-[13px] font-medium text-fg">② 落地方式</div>
+                <SegmentedControl
+                  value={fastDirect}
+                  onChange={setFastDirect}
+                  options={[
+                    { value: "relay", label: "经落地节点中转" },
+                    { value: "direct", label: "直连目标" },
+                  ]}
+                />
+              </div>
+
+              {fastDirect === "direct" ? (
+                <div className="rounded-lg bg-surface border border-line px-3.5 py-2.5 text-xs text-muted leading-relaxed">
+                  入口节点直接访问最终目标，不经过其他服务器。适合目标本身可达、只需换入口 IP 的场景。
+                </div>
+              ) : (
+                <div>
+                  <div className="text-[12px] text-muted mb-1.5">
+                    选择落地节点（可多选，多选自动负载均衡与故障切换）
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-44 overflow-y-auto p-1">
+                    {nodeOptions
+                      .filter((n) => n.id !== fastEntry)
+                      .map((n) => {
+                        const checked = fastExits.includes(n.id);
+                        return (
+                          <label
+                            key={n.id}
+                            className={`flex items-center gap-2.5 px-3 h-10 rounded-lg border cursor-pointer transition-colors ${
+                              checked ? "border-accent/50 bg-accent-soft" : "border-line hover:border-line-strong bg-surface"
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              className="accent-[var(--accent)] h-4 w-4"
+                              checked={checked}
+                              onChange={() =>
+                                setFastExits((prev) => (checked ? prev.filter((x) => x !== n.id) : [...prev, n.id]))
+                              }
+                            />
+                            <span className="flex-1 min-w-0 truncate text-[13px] text-fg">{n.name}</span>
+                            <StatusDot tone={n.status === 1 ? "success" : "danger"} />
+                          </label>
+                        );
+                      })}
+                    {nodeOptions.filter((n) => n.id !== fastEntry).length === 0 && (
+                      <div className="text-xs text-faint py-2">没有其他可选节点</div>
+                    )}
+                  </div>
+                  {errors.fastExits && <p className="mt-1 text-xs text-danger">{errors.fastExits}</p>}
+                </div>
+              )}
+
+              {/* 多出口策略(仅多落地时展示) */}
+              {fastDirect === "relay" && fastExits.length > 1 && (
+                <Select label="多落地策略" value={fastGroupStrategy} onChange={(e) => setFastGroupStrategy(e.target.value)}>
+                  {TARGET_STRATEGIES.map((s) => (
+                    <option key={s.value} value={s.value}>
+                      {s.label}
+                    </option>
+                  ))}
+                </Select>
+              )}
+
+              {/* 路径预览 */}
+              {fastEntry != null && (
+                <div className="text-xs font-mono text-muted bg-surface-2 rounded-lg px-3 py-2">
+                  {nodeOptions.find((n) => n.id === fastEntry)?.name || `#${fastEntry}`}
+                  {" → "}
+                  {fastDirect === "direct"
+                    ? "目标"
+                    : fastExits.length > 0
+                    ? fastExits.map((id) => nodeOptions.find((n) => n.id === id)?.name || `#${id}`).join(" / ")
+                    : "请选择落地"}
+                  {" → "}
+                  {form.remoteAddr.trim() ? form.remoteAddr.split(/[,，\n]/)[0].trim() : "目标"}
+                </div>
+              )}
+            </div>
+          ) : !isEdit && createMode === "advanced" ? (
             <div className="space-y-4 rounded-xl border border-accent/30 bg-accent-soft/30 p-4">
               <div>
                 <div className="text-[13px] font-semibold text-fg">1. 选择组网与入口</div>
@@ -1023,12 +1173,12 @@ export default function ForwardPage() {
           )}
 
           <Textarea
-            label="最终目标地址"
+            label={!isEdit && createMode === "fast" ? "③ 最终目标地址" : "最终目标地址"}
             placeholder="1.2.3.4:8096，多个用逗号或换行分隔"
             value={form.remoteAddr}
             onChange={(e) => setForm({ ...form, remoteAddr: e.target.value })}
             error={errors.remoteAddr}
-            hint="目标由每条路径的出口节点访问"
+            hint="目标由落地节点访问（直连模式由入口节点访问）"
           />
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

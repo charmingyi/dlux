@@ -41,6 +41,15 @@ public class ForwardController extends BaseController {
         return forwardService.createForwardPlan(planDto);
     }
 
+    /**
+     * 快速创建(主流面板式): 入口 + 落地(多选/直连) + 目标, 组网线路自动解决
+     */
+    @LogAnnotation
+    @PostMapping("/quick-create")
+    public R quickCreate(@Validated @RequestBody com.admin.common.dto.QuickForwardDto dto) {
+        return forwardService.quickCreateForward(dto);
+    }
+
     @LogAnnotation
     @PostMapping("/list")
     public R readAll() {

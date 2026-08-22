@@ -10,7 +10,7 @@ import axios from "axios";
  */
 
 export interface PanelWsMessage {
-  id?: number;
+  id?: number | string;
   type: string;
   data: any;
 }

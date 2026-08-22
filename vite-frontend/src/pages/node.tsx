@@ -6,6 +6,7 @@ import {
   Button,
   Input,
   Textarea,
+  Select,
   Modal,
   ConfirmModal,
   Badge,
@@ -26,10 +27,12 @@ import {
   deleteNode,
   getNodeInstallCommand,
   updateNodeAgent,
+  getWgNetworkList,
+  updateWgNetwork,
 } from "@/api";
 import { subscribePanelWs } from "@/api/ws";
 import { formatBytes, formatSpeed, formatUptime, formatLatency, latencyTone } from "@/utils/format";
-import type { Node as NodeType } from "@/types";
+import type { Node as NodeType, WgNetwork } from "@/types";
 
 interface NodeForm {
   id: number | null;
@@ -108,6 +111,21 @@ export default function NodePage() {
   const [installNodeName, setInstallNodeName] = useState("");
   const [busyIds, setBusyIds] = useState<Set<number>>(new Set());
 
+  // 组网快速加入
+  const [wgNetworks, setWgNetworks] = useState<WgNetwork[]>([]);
+  const [joinTarget, setJoinTarget] = useState<LiveNode | null>(null);
+  const [joinWgId, setJoinWgId] = useState<string>("");
+  const [joinLoading, setJoinLoading] = useState(false);
+
+  const loadWgNetworks = useCallback(async () => {
+    try {
+      const res = await getWgNetworkList();
+      if (res.code === 0) setWgNetworks(res.data || []);
+    } catch {
+      // 静默
+    }
+  }, []);
+
   const loadNodes = useCallback(async () => {
     try {
       const res = await getNodeList();
@@ -131,23 +149,22 @@ export default function NodePage() {
   useEffect(() => {
     setLoading(true);
     loadNodes();
+    loadWgNetworks();
     const unsubscribe = subscribePanelWs((msg) => {
-      if (msg.id == null) return;
+      // 后端推送的 id 是字符串, 统一转数字再比较
+      const msgId = msg.id != null ? Number(msg.id) : null;
+      if (msgId == null || Number.isNaN(msgId)) return;
       if (msg.type === "status") {
         const online = Number(msg.data) === 1;
         setNodeList((prev) =>
-          prev.map((n) =>
-            n.id === msg.id
-              ? { ...n, status: online ? 1 : 0, systemInfo: online ? n.systemInfo : null }
-              : n
-          )
+          prev.map((n) => (n.id === msgId ? { ...n, status: online ? 1 : 0, systemInfo: online ? n.systemInfo : null } : n))
         );
       } else if (msg.type === "latency") {
-        setNodeList((prev) => prev.map((n) => (n.id === msg.id ? { ...n, latency: Number(msg.data) } : n)));
+        setNodeList((prev) => prev.map((n) => (n.id === msgId ? { ...n, latency: Number(msg.data) } : n)));
       } else if (msg.type === "info") {
         setNodeList((prev) =>
           prev.map((node) => {
-            if (node.id !== msg.id) return node;
+            if (node.id !== msgId) return node;
             try {
               const raw = typeof msg.data === "string" ? JSON.parse(msg.data) : msg.data;
               const currentUpload = parseInt(raw.bytes_transmitted) || 0;
@@ -186,7 +203,7 @@ export default function NodePage() {
       }
     });
     return unsubscribe;
-  }, [loadNodes]);
+  }, [loadNodes, loadWgNetworks]);
 
   const setBusy = (id: number, busy: boolean) =>
     setBusyIds((prev) => {
@@ -335,6 +352,42 @@ export default function NodePage() {
     }
   };
 
+  const nodeNetworks = (nodeId: number) => wgNetworks.filter((w) => w.members?.some((m) => m.nodeId === nodeId));
+
+  const handleJoinWg = async () => {
+    if (!joinTarget || !joinWgId) return;
+    const wg = wgNetworks.find((w) => w.id === Number(joinWgId));
+    if (!wg) return;
+    setJoinLoading(true);
+    try {
+      const members = [
+        ...(wg.members || []).map((m) => ({ nodeId: m.nodeId, hub: m.hub })),
+        { nodeId: joinTarget.id, hub: 0 },
+      ];
+      const res = await updateWgNetwork({
+        id: wg.id,
+        name: wg.name,
+        subnet: wg.subnet,
+        mode: wg.mode,
+        listenPort: wg.listenPort,
+        mtu: wg.mtu,
+        members,
+      });
+      if (res.code === 0) {
+        toast.success(`已将 ${joinTarget.name} 加入「${wg.name}」并同步`);
+        setJoinTarget(null);
+        setJoinWgId("");
+        loadWgNetworks();
+      } else {
+        toast.error(res.msg || "加入组网失败");
+      }
+    } catch {
+      toast.error("网络错误，请重试");
+    } finally {
+      setJoinLoading(false);
+    }
+  };
+
   const editingNode = isEdit ? nodeList.find((n) => n.id === form.id) : null;
   const protocolLocked = isEdit && editingNode ? editingNode.status !== 1 : true;
 
@@ -405,6 +458,27 @@ export default function NodePage() {
                   </MetaItem>
                   <MetaItem label="Agent 版本">{node.version || "未知"}</MetaItem>
                   <MetaItem label="开机时间">{online && si ? formatUptime(si.uptime) : "-"}</MetaItem>
+                  <MetaItem label="所属组网" className="col-span-2">
+                    {nodeNetworks(node.id).length > 0 ? (
+                      <span className="flex flex-wrap gap-1">
+                        {nodeNetworks(node.id).map((w) => (
+                          <Badge key={w.id} tone="accent">
+                            {w.name}
+                          </Badge>
+                        ))}
+                      </span>
+                    ) : (
+                      <button
+                        className="text-accent text-xs hover:underline"
+                        onClick={() => {
+                          setJoinTarget(node);
+                          setJoinWgId(wgNetworks[0] ? String(wgNetworks[0].id) : "");
+                        }}
+                      >
+                        未加入组网，点击加入 →
+                      </button>
+                    )}
+                  </MetaItem>
                 </div>
 
                 {/* 监控 */}
@@ -581,6 +655,39 @@ export default function NodePage() {
           </>
         }
       />
+
+      {/* 加入组网 */}
+      <Modal
+        open={!!joinTarget}
+        onClose={() => setJoinTarget(null)}
+        title={`将 ${joinTarget?.name ?? ""} 加入组网`}
+        width="max-w-md"
+        footer={
+          <>
+            <Button onClick={() => setJoinTarget(null)}>取消</Button>
+            <Button variant="primary" onClick={handleJoinWg} loading={joinLoading} disabled={!joinWgId}>
+              加入并同步
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <Select label="选择组网" value={joinWgId} onChange={(e) => setJoinWgId(e.target.value)}>
+            <option value="">选择组网</option>
+            {wgNetworks.map((w) => (
+              <option key={w.id} value={w.id}>
+                {w.name} · {w.mode} · {w.members?.length || 0} 节点
+              </option>
+            ))}
+          </Select>
+          <p className="text-xs text-faint leading-relaxed">
+            加入后面板会立即增量同步 WireGuard 配置（准备密钥 + 下发对端），随后即可在转发快速创建中使用该节点。
+          </p>
+          {wgNetworks.length === 0 && (
+            <p className="text-xs text-warning">还没有组网。可先在「WireGuard 组网」创建，或在转发页用快速创建自动建网。</p>
+          )}
+        </div>
+      </Modal>
 
       {/* 安装命令 */}
       <Modal
