@@ -1,161 +1,67 @@
-import React, { useState, useEffect } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import React, { useEffect } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
+import clsx from "clsx";
 
-import { Logo } from '@/components/icons';
-import { siteConfig } from '@/config/site';
+import { IconDashboard, IconShuffle, IconNetwork, IconServer, IconUser } from "@/components/icons";
+import { siteConfig } from "@/config/site";
 
-interface TabItem {
-  path: string;
-  label: string;
-  icon: React.ReactNode;
-  adminOnly?: boolean;
-}
+const TABS = [
+  { path: "/dashboard", label: "首页", icon: <IconDashboard size={21} /> },
+  { path: "/forward", label: "转发", icon: <IconShuffle size={21} /> },
+  { path: "/wg", label: "组网", icon: <IconNetwork size={21} /> },
+  { path: "/node", label: "节点", icon: <IconServer size={21} /> },
+  { path: "/profile", label: "我的", icon: <IconUser size={21} /> },
+];
 
-
-
-export default function H5Layout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default function H5Layout({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate();
   const location = useLocation();
-  const [isAdmin, setIsAdmin] = useState(false);
-
-  // Tabbar配置
-  const tabItems: TabItem[] = [
-    {
-      path: '/dashboard',
-      label: '首页',
-      icon: (
-        <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
-          <path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z" />
-        </svg>
-      )
-    },
-    {
-      path: '/forward',
-      label: '转发',
-      icon: (
-        <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
-          <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
-        </svg>
-      )
-    },
-    {
-      path: '/wg',
-      label: '组网',
-      icon: (
-        <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
-          <path fillRule="evenodd" d="M3 6a3 3 0 013-3h2a3 3 0 013 3v1h-2V6a1 1 0 00-1-1H6a1 1 0 00-1 1v8a1 1 0 001 1h2a1 1 0 001-1v-1h2v1a3 3 0 01-3 3H6a3 3 0 01-3-3V6zm10 0a3 3 0 013-3h1a3 3 0 013 3v8a3 3 0 01-3 3h-1a3 3 0 01-3-3v-1h2v1a1 1 0 001 1h1a1 1 0 001-1V6a1 1 0 00-1-1h-1a1 1 0 00-1 1v1h-2V6z" clipRule="evenodd" />
-        </svg>
-      ),
-      adminOnly: true
-    },
-    {
-      path: '/node',
-      label: '节点',
-      icon: (
-        <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
-          <path fillRule="evenodd" d="M3 3a1 1 0 000 2v8a2 2 0 002 2h2.586l-1.293 1.293a1 1 0 101.414 1.414L10 15.414l2.293 2.293a1 1 0 001.414-1.414L12.414 15H15a2 2 0 002-2V5a1 1 0 100-2H3zm11.707 4.707a1 1 0 00-1.414-1.414L10 9.586 8.707 8.293a1 1 0 00-1.414 0l-2 2a1 1 0 101.414 1.414L8 10.414l1.293 1.293a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-        </svg>
-      ),
-      adminOnly: true
-    },
-    {
-      path: '/profile',
-      label: '我的',
-      icon: (
-        <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
-          <path d="M9 6a3 3 0 11-6 0 3 3 0 016 0zM17 6a3 3 0 11-6 0 3 3 0 016 0zM12.93 17c.046-.327.07-.66.07-1a6.97 6.97 0 00-1.5-4.33A5 5 0 0119 16v1h-6.07zM6 11a5 5 0 015 5v1H1v-1a5 5 0 015-5z" />
-        </svg>
-      )
-    }
-  ];
 
   useEffect(() => {
-
-    // 兼容处理：如果没有admin字段，根据role_id判断（0为管理员）
-    let adminFlag = localStorage.getItem('admin') === 'true';
-    if (localStorage.getItem('admin') === null) {
-      const roleId = parseInt(localStorage.getItem('role_id') || '1', 10);
-      adminFlag = roleId === 0;
-      // 补充设置admin字段，避免下次再次判断
-      localStorage.setItem('admin', adminFlag.toString());
-    }
-    
-
-    setIsAdmin(adminFlag);
-  }, []);
-
-  // Tab点击处理
-  const handleTabClick = (path: string) => {
-    navigate(path);
-  };
-
-  // 过滤tab项（根据权限）
-  const filteredTabItems = tabItems.filter(item => 
-    !item.adminOnly || isAdmin
-  );
-
-  // 路由切换时回到页面顶部，避免上一页的滚动位置遗留
-  useEffect(() => {
-    try {
-      window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
-    } catch (e) {
-      window.scrollTo(0, 0);
-    }
-    document.body.scrollTop = 0;
-    document.documentElement.scrollTop = 0;
+    window.scrollTo(0, 0);
   }, [location.pathname]);
 
   return (
-    <div className="flex flex-col min-h-screen bg-gray-100 dark:bg-black">
-      {/* 顶部导航栏 */}
-      <header className="bg-white dark:bg-black shadow-sm border-b border-gray-200 dark:border-gray-600 h-14 safe-top flex-shrink-0 flex items-center justify-between px-4 relative z-10">
-        <div className="flex items-center gap-2">
-          <Logo size={20} />
-          <h1 className="text-sm font-bold text-foreground">{siteConfig.name}</h1>
+    <div className="flex flex-col min-h-screen bg-bg">
+      <header
+        className="sticky top-0 z-30 bg-surface/85 backdrop-blur border-b border-line flex h-13 items-center px-4"
+        style={{ paddingTop: "env(safe-area-inset-top)" }}
+      >
+        <div
+          className="flex items-center justify-center rounded-lg text-white font-bold shrink-0"
+          style={{ width: 24, height: 24, background: "linear-gradient(135deg, var(--accent), #8b5cf6)", fontSize: 12 }}
+        >
+          D
         </div>
-
-        <div className="flex items-center gap-2">
-        </div>
+        <h1 className="ml-2 text-[15px] font-bold text-fg truncate">{siteConfig.name}</h1>
+        <span className="ml-auto text-[11px] text-faint">v{siteConfig.version}</span>
       </header>
 
-      {/* 主内容区域 */}
-      <main className="flex-1 bg-gray-100 dark:bg-black">
-        {children}
-      </main>
+      <main className="flex-1">{children}</main>
 
-      {/* 用于给固定 Tabbar 腾出空间的占位元素 */}
-      <div aria-hidden className="h-16 safe-bottom" />
+      <div aria-hidden style={{ height: "calc(3.5rem + env(safe-area-inset-bottom))" }} />
 
-      {/* 底部Tabbar */}
-      <nav className="bg-white dark:bg-black border-t border-gray-200 dark:border-gray-600 h-16 safe-bottom flex-shrink-0 flex items-center justify-around px-2 fixed bottom-0 left-0 right-0 z-30">
-        {filteredTabItems.map((item) => {
-          const isActive = location.pathname === item.path;
+      <nav
+        className="fixed bottom-0 left-0 right-0 z-30 bg-surface/95 backdrop-blur border-t border-line flex items-stretch"
+        style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+      >
+        {TABS.map((tab) => {
+          const active = location.pathname === tab.path;
           return (
             <button
-              key={item.path}
-              onClick={() => handleTabClick(item.path)}
-              className={`
-                flex flex-col items-center justify-center flex-1 h-full
-                transition-colors duration-200 min-h-[44px]
-                ${isActive 
-                  ? 'text-primary-600 dark:text-primary-400' 
-                  : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
-                }
-              `}
+              key={tab.path}
+              onClick={() => navigate(tab.path)}
+              className={clsx(
+                "flex flex-col items-center justify-center gap-0.5 flex-1 h-14 transition-colors",
+                active ? "text-accent" : "text-faint"
+              )}
             >
-              <div className="flex-shrink-0 mb-1">
-                {item.icon}
-              </div>
-              <span className="text-xs font-medium">{item.label}</span>
+              {tab.icon}
+              <span className="text-[10px] font-medium">{tab.label}</span>
             </button>
           );
         })}
       </nav>
-
     </div>
   );
 }

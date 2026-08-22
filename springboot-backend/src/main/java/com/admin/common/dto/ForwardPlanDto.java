@@ -23,7 +23,7 @@ public class ForwardPlanDto {
     @NotNull(message = "入口节点不能为空")
     private Integer entryNodeId;
 
-    @NotNull(message = "WireGuard组网不能为空")
+    /** WireGuard组网(wg传输必填, tls/tcp直连时可为空) */
     private Integer wgNetworkId;
 
     @Valid
@@ -42,6 +42,9 @@ public class ForwardPlanDto {
     private String targetStrategy;
 
     private Integer speedId;
+
+    /** 入口网卡绑定(可选) */
+    private String interfaceName;
 
     @Min(value = 1, message = "端口号不能小于1")
     @Max(value = 65535, message = "端口号不能大于65535")

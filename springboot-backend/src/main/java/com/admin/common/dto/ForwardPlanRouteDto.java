@@ -17,4 +17,7 @@ public class ForwardPlanRouteDto {
     private List<Integer> hopNodeIds;
 
     private Integer weight;
+
+    /** 传输方式 wg/tls/tcp, 为空时按wg处理 */
+    private String transport;
 }

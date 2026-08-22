@@ -1176,7 +1176,7 @@ func (w *WebSocketReporter) handlePingIps(data interface{}) ([]PingIpsResult, er
 // handleUpdateAgent 节点在线自更新: 下载最新release二进制并替换重启
 func (w *WebSocketReporter) handleUpdateAgent(data interface{}) error {
 	repoURL := "https://github.com/charmingyi/dlux"
-	version := "1.1.3"
+	version := "1.2.0"
 
 	var req struct {
 		Version string `json:"version"`

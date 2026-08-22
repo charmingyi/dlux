@@ -10,15 +10,19 @@ import com.admin.common.utils.JwtUtil;
 import com.admin.common.utils.Md5Util;
 import com.admin.entity.Forward;
 import com.admin.entity.Node;
+import com.admin.entity.SpeedLimit;
 import com.admin.entity.StatisticsFlow;
 import com.admin.entity.User;
 import com.admin.entity.ViteConfig;
+import com.admin.entity.WgNetwork;
 import com.admin.mapper.ForwardMapper;
 import com.admin.mapper.UserMapper;
 import com.admin.service.NodeService;
+import com.admin.service.SpeedLimitService;
 import com.admin.service.StatisticsFlowService;
 import com.admin.service.UserService;
 import com.admin.service.ViteConfigService;
+import com.admin.service.WgNetworkService;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import lombok.extern.slf4j.Slf4j;
@@ -65,6 +69,12 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
 
     @Resource
     private StatisticsFlowService statisticsFlowService;
+
+    @Resource
+    private WgNetworkService wgNetworkService;
+
+    @Resource
+    private SpeedLimitService speedLimitService;
 
     @Resource
     private ImageCaptchaApplication application;
@@ -162,6 +172,32 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         data.put("totalForwardCount", totalForwardCount);
         data.put("totalInFlow", totalInFlow);
         data.put("totalOutFlow", totalOutFlow);
+
+        // 状态细分与资源统计
+        long pausedCount = forwardMapper.selectCount(new QueryWrapper<Forward>().eq("status", 0));
+        long errorCount = forwardMapper.selectCount(new QueryWrapper<Forward>().eq("status", -1));
+        data.put("pausedCount", pausedCount);
+        data.put("errorCount", errorCount);
+        data.put("wgNetworkCount", wgNetworkService.count(new QueryWrapper<WgNetwork>()));
+        data.put("speedLimitCount", speedLimitService.count(new QueryWrapper<SpeedLimit>()));
+
+        // 流量Top转发
+        List<Forward> sorted = new ArrayList<>(forwards);
+        sorted.sort((a, b) -> Long.compare(
+                (b.getInFlow() == null ? 0 : b.getInFlow()) + (b.getOutFlow() == null ? 0 : b.getOutFlow()),
+                (a.getInFlow() == null ? 0 : a.getInFlow()) + (a.getOutFlow() == null ? 0 : a.getOutFlow())));
+        List<Map<String, Object>> topForwards = new ArrayList<>();
+        for (Forward f : sorted.subList(0, Math.min(5, sorted.size()))) {
+            Map<String, Object> t = new HashMap<>();
+            t.put("id", f.getId());
+            t.put("name", f.getName());
+            t.put("inPort", f.getInPort());
+            t.put("status", f.getStatus());
+            t.put("inFlow", f.getInFlow());
+            t.put("outFlow", f.getOutFlow());
+            topForwards.add(t);
+        }
+        data.put("topForwards", topForwards);
 
         // 24小时流量
         List<StatisticsFlow> recent = statisticsFlowService.list(

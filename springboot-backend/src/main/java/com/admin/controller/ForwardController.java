@@ -104,4 +104,51 @@ public class ForwardController extends BaseController {
         return forwardService.updateForwardOrder(params);
     }
 
+    /**
+     * 克隆转发(复用组/目标/策略, 自动分配新端口)
+     */
+    @LogAnnotation
+    @PostMapping("/clone")
+    public R cloneForward(@RequestBody Map<String, Object> params) {
+        Long id = Long.valueOf(params.get("id").toString());
+        return forwardService.cloneForward(id);
+    }
+
+    /**
+     * 批量操作 action: pause/resume/delete, ids: 转发ID数组
+     */
+    @LogAnnotation
+    @PostMapping("/batch")
+    public R batchOperation(@RequestBody Map<String, Object> params) {
+        return forwardService.batchOperation(params);
+    }
+
+    /**
+     * 导出全部转发为可迁移JSON
+     */
+    @LogAnnotation
+    @PostMapping("/export")
+    public R exportForwards() {
+        return forwardService.exportForwards();
+    }
+
+    /**
+     * 导入转发JSON(复用一体化创建, 失败自动回滚)
+     */
+    @LogAnnotation
+    @PostMapping("/import")
+    public R importForwards(@RequestBody Map<String, Object> params) {
+        return forwardService.importForwards(params);
+    }
+
+    /**
+     * 重新下发单个转发(保持暂停态)
+     */
+    @LogAnnotation
+    @PostMapping("/redeploy")
+    public R redeployForward(@RequestBody Map<String, Object> params) {
+        Long id = Long.valueOf(params.get("id").toString());
+        return forwardService.redeployForward(id);
+    }
+
 }

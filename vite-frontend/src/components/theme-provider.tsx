@@ -1,44 +1,65 @@
-import React, { useEffect } from 'react';
-import { useTheme } from '@heroui/use-theme';
+import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
 
-interface ThemeProviderProps {
-  children: React.ReactNode;
+type Theme = "light" | "dark";
+
+interface ThemeContextValue {
+  theme: Theme;
+  toggleTheme: () => void;
+  setTheme: (t: Theme) => void;
 }
 
-export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
-  const { theme, setTheme } = useTheme();
+const ThemeContext = createContext<ThemeContextValue>({
+  theme: "dark",
+  toggleTheme: () => {},
+  setTheme: () => {},
+});
+
+const applyTheme = (t: Theme) => {
+  const root = document.documentElement;
+  if (t === "dark") {
+    root.classList.add("dark");
+    root.style.colorScheme = "dark";
+  } else {
+    root.classList.remove("dark");
+    root.style.colorScheme = "light";
+  }
+};
+
+export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [theme, setThemeState] = useState<Theme>(() => {
+    if (typeof window === "undefined") return "dark";
+    const saved = localStorage.getItem("theme");
+    if (saved === "light" || saved === "dark") return saved;
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  });
 
   useEffect(() => {
-    // 确保主题与HTML class同步
-    const updateThemeClass = (currentTheme: string) => {
-      if (currentTheme === 'dark') {
-        document.documentElement.classList.add('dark');
-        document.documentElement.style.colorScheme = 'dark';
-      } else {
-        document.documentElement.classList.remove('dark');
-        document.documentElement.style.colorScheme = 'light';
-      }
-    };
+    applyTheme(theme);
+  }, [theme]);
 
-    // 始终跟随系统主题
-    const systemTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-    if (systemTheme !== theme) {
-      setTheme(systemTheme);
-    }
+  // 未手动选择时跟随系统
+  useEffect(() => {
+    if (localStorage.getItem("theme")) return;
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = (e: MediaQueryListEvent) => setThemeState(e.matches ? "dark" : "light");
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
 
-    // 监听主题变化
-    updateThemeClass(theme);
+  const setTheme = useCallback((t: Theme) => {
+    localStorage.setItem("theme", t);
+    setThemeState(t);
+  }, []);
 
-    // 监听系统主题变化
-    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-    const handleThemeChange = (e: MediaQueryListEvent) => {
-      const newTheme = e.matches ? 'dark' : 'light';
-      setTheme(newTheme);
-    };
-
-    mediaQuery.addEventListener('change', handleThemeChange);
-    return () => mediaQuery.removeEventListener('change', handleThemeChange);
+  const toggleTheme = useCallback(() => {
+    setTheme(theme === "dark" ? "light" : "dark");
   }, [theme, setTheme]);
 
-  return <>{children}</>;
-}; 
+  return (
+    <ThemeContext.Provider value={{ theme, toggleTheme, setTheme }}>
+      {children}
+    </ThemeContext.Provider>
+  );
+};
+
+export const useTheme = () => useContext(ThemeContext);

@@ -1,60 +1,35 @@
-import React from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
-import { Button } from "@heroui/button";
+import React, { useEffect } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
 
-import { Logo } from '@/components/icons';
-import { siteConfig } from '@/config/site';
+import { siteConfig } from "@/config/site";
 
-export default function H5SimpleLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+/** 移动端二级页面布局: 顶栏带返回按钮 */
+export default function H5SimpleLayout({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate();
   const location = useLocation();
-  
-  // 路由切换时回到顶部，避免上一页滚动位置保留
-  React.useEffect(() => {
-    try {
-      window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
-    } catch (e) {
-      window.scrollTo(0, 0);
-    }
-    document.body.scrollTop = 0;
-    document.documentElement.scrollTop = 0;
+
+  useEffect(() => {
+    window.scrollTo(0, 0);
   }, [location.pathname]);
 
-  const handleBack = () => {
-    navigate('/profile');
-  };
-
   return (
-    <div className="flex flex-col min-h-screen bg-gray-100 dark:bg-black">
-      {/* 顶部导航栏 */}
-      <header className="bg-white dark:bg-black shadow-sm border-b border-gray-200 dark:border-gray-600 h-14 safe-top flex-shrink-0 flex items-center justify-between px-4 relative z-10">
-        <div className="flex items-center gap-2">
-          <Button
-            isIconOnly
-            variant="light"
-            size="sm"
-            onPress={handleBack}
-          >
-            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-              <path fillRule="evenodd" d="M12.707 5.293a1 1 0 010 1.414L9.414 10l3.293 3.293a1 1 0 01-1.414 1.414l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 0z" clipRule="evenodd" />
-            </svg>
-          </Button>
-          <Logo size={20} />
-          <h1 className="text-sm font-bold text-foreground">{siteConfig.name}</h1>
-        </div>
-
-        <div className="flex items-center gap-2">
-        </div>
+    <div className="flex flex-col min-h-screen bg-bg">
+      <header
+        className="sticky top-0 z-30 bg-surface/85 backdrop-blur border-b border-line flex h-13 items-center px-3 gap-1"
+        style={{ paddingTop: "env(safe-area-inset-top)" }}
+      >
+        <button
+          onClick={() => navigate("/profile")}
+          className="flex items-center justify-center h-9 w-9 -ml-1 rounded-lg text-muted hover:bg-surface-2"
+          aria-label="返回"
+        >
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="m15 18-6-6 6-6" />
+          </svg>
+        </button>
+        <h1 className="text-[15px] font-bold text-fg truncate">{siteConfig.name}</h1>
       </header>
-
-      {/* 主内容区域 */}
-      <main className="flex-1 bg-gray-100 dark:bg-black pb-0">
-        {children}
-      </main>
+      <main className="flex-1">{children}</main>
     </div>
   );
 }

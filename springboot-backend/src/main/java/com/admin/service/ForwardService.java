@@ -41,6 +41,21 @@ public interface ForwardService extends IService<Forward> {
     /** 重新下发某组的所有转发 */
     R redeployGroup(Long groupId);
 
+    /** 克隆一条转发(复用组/目标/策略, 自动分配新端口) */
+    R cloneForward(Long id);
+
+    /** 批量操作 pause/resume/delete */
+    R batchOperation(Map<String, Object> params);
+
+    /** 导出全部转发为可迁移JSON */
+    R exportForwards();
+
+    /** 导入转发JSON(复用一体化创建, 原子回滚) */
+    R importForwards(Map<String, Object> params);
+
+    /** 重新下发单个转发(保持暂停态) */
+    R redeployForward(Long id);
+
     /** 下发/更新一个转发的完整配置(链+入口服务), 供组/线路变化后调用 */
     R deployForward(Forward forward);
 

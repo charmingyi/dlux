@@ -164,7 +164,8 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
                 linkDto.setEntryNodeId(planDto.getEntryNodeId());
                 linkDto.setExitNodeId(route.getExitNodeId());
                 linkDto.setHopNodeIds(route.getHopNodeIds() == null ? new ArrayList<>() : route.getHopNodeIds());
-                linkDto.setTransport("wg");
+                linkDto.setTransport(route.getTransport() == null || route.getTransport().trim().isEmpty()
+                        ? "wg" : route.getTransport().trim());
                 linkDto.setWgNetworkId(planDto.getWgNetworkId());
 
                 R linkResult = linkService.createLink(linkDto);
@@ -207,6 +208,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
             forwardDto.setRemoteAddr(planDto.getRemoteAddr());
             forwardDto.setTargetStrategy(planDto.getTargetStrategy() == null ? "fifo" : planDto.getTargetStrategy());
             forwardDto.setSpeedId(planDto.getSpeedId());
+            forwardDto.setInterfaceName(planDto.getInterfaceName());
             forwardDto.setInPort(planDto.getInPort());
 
             R forwardResult = createForward(forwardDto);
@@ -598,6 +600,306 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
                 }
             }
             GostUtil.UpdateProbes(node.getId(), entry.getValue());
+        }
+    }
+
+    @Override
+    public R redeployForward(Long id) {
+        Forward forward = this.getById(id);
+        if (forward == null) {
+            return R.err("端口转发不存在");
+        }
+        R result = deployForward(forward);
+        if (result.getCode() != 0) {
+            updateForwardStatusToError(forward);
+            return result;
+        }
+        // 暂停中的转发重下发后保持暂停
+        if (forward.getStatus() != null && forward.getStatus() == FORWARD_STATUS_PAUSED) {
+            Integer entryNodeId = lbGroupService.getGroupEntryNode(forward.getGroupId());
+            if (entryNodeId != null) {
+                try {
+                    GostUtil.PauseService(entryNodeId.longValue(), buildServiceName(id));
+                } catch (Exception e) {
+                    log.warn("重下发后恢复暂停态失败 forward={}: {}", id, e.getMessage());
+                }
+            }
+            pushProbes(forward);
+            return R.ok("已重新下发(保持暂停)");
+        }
+        forward.setStatus(FORWARD_STATUS_ACTIVE);
+        forward.setUpdatedTime(System.currentTimeMillis());
+        this.updateById(forward);
+        pushProbes(forward);
+        return R.ok("已重新下发");
+    }
+
+    @Override
+    public R cloneForward(Long id) {
+        Forward source = this.getById(id);
+        if (source == null) {
+            return R.err("端口转发不存在");
+        }
+        String baseName = source.getName() == null ? "转发" : source.getName();
+        while (baseName.endsWith("副本")) {
+            baseName = baseName.substring(0, baseName.length() - 2).trim();
+        }
+        ForwardDto dto = new ForwardDto();
+        dto.setName(baseName + "副本");
+        dto.setGroupId(source.getGroupId());
+        dto.setRemoteAddr(source.getRemoteAddr());
+        dto.setTargetStrategy(source.getTargetStrategy());
+        dto.setSpeedId(source.getSpeedId());
+        dto.setInterfaceName(source.getInterfaceName());
+        dto.setInPort(null);
+        return createForward(dto);
+    }
+
+    @Override
+    public R batchOperation(Map<String, Object> params) {
+        Object actionObj = params.get("action");
+        Object idsObj = params.get("ids");
+        if (actionObj == null || idsObj == null || !(idsObj instanceof List)) {
+            return R.err("参数不完整, 需要action和ids");
+        }
+        String action = actionObj.toString();
+        if (!"pause".equals(action) && !"resume".equals(action) && !"delete".equals(action)) {
+            return R.err("不支持的操作: " + action);
+        }
+        List<?> ids = (List<?>) idsObj;
+        if (ids.isEmpty()) {
+            return R.err("ids不能为空");
+        }
+
+        List<Map<String, Object>> results = new ArrayList<>();
+        int success = 0;
+        for (Object idObj : ids) {
+            Long id;
+            try {
+                id = Long.valueOf(idObj.toString());
+            } catch (NumberFormatException e) {
+                results.add(batchResult(idObj, false, "无效ID"));
+                continue;
+            }
+            R result;
+            switch (action) {
+                case "pause":
+                    result = pauseForward(id);
+                    break;
+                case "resume":
+                    result = resumeForward(id);
+                    break;
+                default:
+                    result = deleteForward(id);
+                    break;
+            }
+            boolean ok = result.getCode() == 0;
+            if (ok) success++;
+            results.add(batchResult(id, ok, ok ? "成功" : result.getMsg()));
+        }
+        Map<String, Object> data = new HashMap<>();
+        data.put("total", ids.size());
+        data.put("success", success);
+        data.put("fail", ids.size() - success);
+        data.put("results", results);
+        return R.ok(data);
+    }
+
+    @Override
+    public R exportForwards() {
+        List<Forward> forwards = this.list(new QueryWrapper<Forward>().orderByAsc("inx").orderByAsc("id"));
+        List<Map<String, Object>> items = new ArrayList<>();
+        for (Forward forward : forwards) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("name", forward.getName());
+            item.put("inPort", forward.getInPort());
+            item.put("remoteAddr", forward.getRemoteAddr());
+            item.put("targetStrategy", forward.getTargetStrategy());
+            item.put("speedId", forward.getSpeedId());
+            item.put("interfaceName", forward.getInterfaceName());
+
+            LbGroup group = forward.getGroupId() == null ? null : lbGroupService.getById(forward.getGroupId());
+            if (group != null) {
+                item.put("groupStrategy", group.getStrategy());
+                item.put("maxFails", group.getMaxFails());
+                item.put("failTimeout", group.getFailTimeout());
+            }
+
+            List<Map<String, Object>> routes = new ArrayList<>();
+            Integer entryNodeId = null;
+            Integer wgNetworkId = null;
+            if (forward.getGroupId() != null) {
+                List<GroupLink> groupLinks = lbGroupService.getGroupLinks(forward.getGroupId().longValue());
+                for (GroupLink gl : groupLinks) {
+                    Link link = linkMapper.selectById(gl.getLinkId());
+                    if (link == null) continue;
+                    Map<String, Object> route = new LinkedHashMap<>();
+                    route.put("name", link.getName());
+                    route.put("exitNodeId", link.getExitNodeId());
+                    route.put("hopNodeIds", parseHopNodeIds(link.getHopNodeIds()));
+                    route.put("weight", gl.getWeight());
+                    route.put("transport", link.getTransport());
+                    routes.add(route);
+                    entryNodeId = link.getEntryNodeId();
+                    if (wgNetworkId == null) {
+                        wgNetworkId = link.getWgNetworkId();
+                    }
+                }
+            }
+            item.put("entryNodeId", entryNodeId);
+            item.put("wgNetworkId", wgNetworkId);
+            item.put("routes", routes);
+            items.add(item);
+        }
+
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("version", 1);
+        data.put("exportedAt", System.currentTimeMillis());
+        data.put("count", items.size());
+        data.put("forwards", items);
+        return R.ok(data);
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public R importForwards(Map<String, Object> params) {
+        Object forwardsObj = params.get("forwards");
+        if (!(forwardsObj instanceof List) || ((List<?>) forwardsObj).isEmpty()) {
+            return R.err("导入内容为空或格式不正确");
+        }
+        boolean overwrite = Boolean.parseBoolean(String.valueOf(params.getOrDefault("overwrite", "false")));
+
+        // 名称去重: 已存在的转发默认跳过
+        Set<String> existingNames = new HashSet<>();
+        for (Forward f : this.list(null)) {
+            if (f.getName() != null) existingNames.add(f.getName());
+        }
+
+        List<Map<String, Object>> results = new ArrayList<>();
+        int success = 0;
+        int skipped = 0;
+        for (Object itemObj : (List<Object>) forwardsObj) {
+            if (!(itemObj instanceof Map)) continue;
+            Map<String, Object> item = (Map<String, Object>) itemObj;
+            String name = Objects.toString(item.get("name"), "").trim();
+            if (name.isEmpty()) {
+                results.add(importResult("", false, "缺少转发名称", null));
+                continue;
+            }
+            if (existingNames.contains(name) && !overwrite) {
+                skipped++;
+                results.add(importResult(name, false, "同名转发已存在, 已跳过", null));
+                continue;
+            }
+            // 同名覆盖: 先删除旧转发再创建
+            if (existingNames.contains(name) && overwrite) {
+                for (Forward f : this.list(new QueryWrapper<Forward>().eq("name", name))) {
+                    try {
+                        deleteForward(f.getId().longValue());
+                    } catch (Exception e) {
+                        log.warn("覆盖删除旧转发失败 {}: {}", name, e.getMessage());
+                    }
+                }
+            }
+
+            R result = importOneForward(item, name);
+            boolean ok = result.getCode() == 0;
+            if (ok) {
+                success++;
+                existingNames.add(name);
+            }
+            results.add(importResult(name, ok, ok ? "导入成功" : result.getMsg(), ok ? result.getData() : null));
+        }
+
+        Map<String, Object> data = new HashMap<>();
+        data.put("total", results.size());
+        data.put("success", success);
+        data.put("skipped", skipped);
+        data.put("results", results);
+        return R.ok(data);
+    }
+
+    /** 将导出的单条转发还原为一体化创建请求并执行 */
+    private R importOneForward(Map<String, Object> item, String name) {
+        try {
+            ForwardPlanDto planDto = new ForwardPlanDto();
+            planDto.setName(name);
+            Object entryNodeId = item.get("entryNodeId");
+            if (entryNodeId == null) return R.err("缺少入口节点");
+            planDto.setEntryNodeId(Integer.valueOf(entryNodeId.toString()));
+            if (nodeService.getById(Integer.valueOf(entryNodeId.toString())) == null) {
+                return R.err("入口节点不存在: " + entryNodeId);
+            }
+            Object wgNetworkId = item.get("wgNetworkId");
+            planDto.setWgNetworkId(wgNetworkId == null ? null : Integer.valueOf(wgNetworkId.toString()));
+            planDto.setGroupStrategy(Objects.toString(item.get("groupStrategy"), null));
+            planDto.setMaxFails(item.get("maxFails") == null ? null : Integer.valueOf(item.get("maxFails").toString()));
+            planDto.setFailTimeout(Objects.toString(item.get("failTimeout"), null));
+            planDto.setRemoteAddr(Objects.toString(item.get("remoteAddr"), ""));
+            if (planDto.getRemoteAddr().isEmpty()) return R.err("缺少目标地址");
+            planDto.setTargetStrategy(Objects.toString(item.get("targetStrategy"), null));
+            planDto.setSpeedId(item.get("speedId") == null ? null : Integer.valueOf(item.get("speedId").toString()));
+            planDto.setInterfaceName(Objects.toString(item.get("interfaceName"), null));
+
+            List<ForwardPlanRouteDto> routes = new ArrayList<>();
+            Object routesObj = item.get("routes");
+            if (routesObj instanceof List) {
+                for (Object routeObj : (List<?>) routesObj) {
+                    if (!(routeObj instanceof Map)) continue;
+                    Map<String, Object> route = (Map<String, Object>) routeObj;
+                    ForwardPlanRouteDto routeDto = new ForwardPlanRouteDto();
+                    routeDto.setName(Objects.toString(route.get("name"), null));
+                    Object exitNodeId = route.get("exitNodeId");
+                    if (exitNodeId == null) return R.err("线路缺少出口节点");
+                    routeDto.setExitNodeId(Integer.valueOf(exitNodeId.toString()));
+                    List<Integer> hops = new ArrayList<>();
+                    Object hopsObj = route.get("hopNodeIds");
+                    if (hopsObj instanceof List) {
+                        for (Object hop : (List<?>) hopsObj) {
+                            hops.add(Integer.valueOf(hop.toString()));
+                        }
+                    }
+                    routeDto.setHopNodeIds(hops);
+                    routeDto.setWeight(route.get("weight") == null ? null : Integer.valueOf(route.get("weight").toString()));
+                    routeDto.setTransport(Objects.toString(route.get("transport"), null));
+                    routes.add(routeDto);
+                }
+            }
+            if (routes.isEmpty()) return R.err("没有可用的线路");
+            planDto.setRoutes(routes);
+
+            return createForwardPlan(planDto);
+        } catch (Exception e) {
+            log.warn("导入转发失败 {}: {}", name, e.getMessage());
+            return R.err("导入失败: " + e.getMessage());
+        }
+    }
+
+    private Map<String, Object> batchResult(Object id, boolean success, String msg) {
+        Map<String, Object> r = new HashMap<>();
+        r.put("id", id);
+        r.put("success", success);
+        r.put("msg", msg);
+        return r;
+    }
+
+    private Map<String, Object> importResult(String name, boolean success, String msg, Object data) {
+        Map<String, Object> r = new HashMap<>();
+        r.put("name", name);
+        r.put("success", success);
+        r.put("msg", msg);
+        if (data != null) r.put("data", data);
+        return r;
+    }
+
+    private List<Integer> parseHopNodeIds(String hopNodeIds) {
+        if (hopNodeIds == null || hopNodeIds.trim().isEmpty()) {
+            return new ArrayList<>();
+        }
+        try {
+            return com.alibaba.fastjson.JSON.parseArray(hopNodeIds, Integer.class);
+        } catch (Exception e) {
+            return new ArrayList<>();
         }
     }
 

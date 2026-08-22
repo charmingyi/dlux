@@ -60,6 +60,13 @@ export const pauseForwardService = (forwardId: number) => Network.post("/forward
 export const resumeForwardService = (forwardId: number) => Network.post("/forward/resume", { id: forwardId });
 export const diagnoseForward = (forwardId: number) => Network.post("/forward/diagnose", { forwardId });
 export const updateForwardOrder = (data: { forwards: Array<{ id: number; inx: number }> }) => Network.post("/forward/update-order", data);
+export const cloneForward = (id: number) => Network.post("/forward/clone", { id });
+export const batchForward = (action: "pause" | "resume" | "delete", ids: number[]) =>
+  Network.post("/forward/batch", { action, ids });
+export const exportForwards = () => Network.post("/forward/export");
+export const importForwards = (forwards: any[], overwrite = false) =>
+  Network.post("/forward/import", { forwards, overwrite });
+export const redeployForward = (id: number) => Network.post("/forward/redeploy", { id });
 
 // 限速规则CRUD
 export const createSpeedLimit = (data: any) => Network.post("/speed-limit/create", data);

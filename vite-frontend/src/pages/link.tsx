@@ -1,23 +1,23 @@
 import { useState, useEffect } from "react";
-import { Card, CardBody, CardHeader } from "@heroui/card";
-import { Button } from "@heroui/button";
-import { Input } from "@heroui/input";
-import { Modal, ModalContent, ModalHeader, ModalBody, ModalFooter } from "@heroui/modal";
-import { Chip } from "@heroui/chip";
-import { Spinner } from "@heroui/spinner";
-import { Select, SelectItem } from "@heroui/select";
-import { Radio, RadioGroup } from "@heroui/radio";
-import toast from 'react-hot-toast';
+import toast from "react-hot-toast";
 
 import {
-  createLink,
-  getLinkList,
-  updateLink,
-  deleteLink,
-  redeployLink,
-  getWgNetworkList,
-  getNodeList
-} from "@/api";
+  Button,
+  Input,
+  Select,
+  Modal,
+  ConfirmModal,
+  Badge,
+  StatusDot,
+  Card,
+  EmptyState,
+  PageLoading,
+  PageHeader,
+  SegmentedControl,
+} from "@/components/ui";
+import { IconPlus, IconRefresh, IconChevronRight } from "@/components/icons";
+import { createLink, getLinkList, updateLink, deleteLink, redeployLink, getWgNetworkList, getNodeList } from "@/api";
+import { formatLatency, latencyTone, transportLabel } from "@/utils/format";
 import type { LinkItem } from "@/types";
 
 interface NodeOption {
@@ -35,7 +35,7 @@ interface LinkForm {
   id: number | null;
   name: string;
   wgNetworkId: number | null;
-  transport: 'wg' | 'tls' | 'tcp';
+  transport: "wg" | "tls" | "tcp";
   entryNodeId: number | null;
   exitNodeId: number | null;
   hopNodeIds: number[];
@@ -43,29 +43,12 @@ interface LinkForm {
 
 const defaultForm: LinkForm = {
   id: null,
-  name: '',
+  name: "",
   wgNetworkId: null,
-  transport: 'wg',
+  transport: "wg",
   entryNodeId: null,
   exitNodeId: null,
-  hopNodeIds: []
-};
-
-const strategyText = (s: string) => ({ wg: '组网', tls: 'TLS', tcp: 'TCP' } as Record<string, string>)[s] || s;
-
-const latencyView = (item: LinkItem) => {
-  if (!item.latencies) return null;
-  const entries = Object.values(item.latencies);
-  if (entries.length === 0) return null;
-  return (
-    <div className="flex flex-wrap gap-1.5 mt-1">
-      {entries.map((e, i) => (
-        <Chip key={i} size="sm" variant="flat" color={e.up ? (e.ms < 50 ? 'success' : e.ms < 100 ? 'primary' : 'warning') : 'danger'}>
-          {e.addr} {e.up ? `${e.ms.toFixed(0)}ms` : '不可达'}
-        </Chip>
-      ))}
-    </div>
-  );
+  hopNodeIds: [],
 };
 
 export default function LinkPage() {
@@ -82,13 +65,11 @@ export default function LinkPage() {
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   const loadLinks = async () => {
-    setLoading(true);
     try {
       const res = await getLinkList();
       if (res.code === 0) setLinkList(res.data || []);
-      else toast.error(res.msg || '加载失败');
-    } catch (e) {
-      toast.error('网络错误，请重试');
+    } catch {
+      // 静默
     } finally {
       setLoading(false);
     }
@@ -99,12 +80,13 @@ export default function LinkPage() {
       const [nodeRes, wgRes] = await Promise.all([getNodeList(), getWgNetworkList()]);
       if (nodeRes.code === 0) setNodeOptions(nodeRes.data || []);
       if (wgRes.code === 0) setWgOptions(wgRes.data || []);
-    } catch (e) {
-      // ignore
+    } catch {
+      // 静默
     }
   };
 
   useEffect(() => {
+    setLoading(true);
     loadLinks();
     loadOptions();
     const timer = setInterval(loadLinks, 60000);
@@ -118,13 +100,15 @@ export default function LinkPage() {
     setDialogOpen(true);
   };
 
-  const openEdit = (link: LinkItem) => {
-    let hops: number[] = [];
+  const parseHops = (raw?: string): number[] => {
     try {
-      hops = link.hopNodeIds ? JSON.parse(link.hopNodeIds) : [];
-    } catch (e) {
-      hops = [];
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
     }
+  };
+
+  const openEdit = (link: LinkItem) => {
     setForm({
       id: link.id,
       name: link.name,
@@ -132,7 +116,7 @@ export default function LinkPage() {
       transport: link.transport,
       entryNodeId: link.entryNodeId,
       exitNodeId: link.exitNodeId,
-      hopNodeIds: hops
+      hopNodeIds: parseHops(link.hopNodeIds),
     });
     setIsEdit(true);
     setErrors({});
@@ -141,12 +125,12 @@ export default function LinkPage() {
 
   const validateForm = () => {
     const errs: Record<string, string> = {};
-    if (!form.name.trim()) errs.name = '请输入线路名称';
-    if (form.entryNodeId == null) errs.entryNodeId = '请选择入口节点';
-    if (form.exitNodeId == null) errs.exitNodeId = '请选择出口节点';
-    if (form.transport === 'wg' && form.wgNetworkId == null) errs.wgNetworkId = '组网传输必须选择组网';
-    if (form.entryNodeId != null && form.exitNodeId != null && form.entryNodeId === form.exitNodeId && form.hopNodeIds.length > 0) {
-      errs.hopNodeIds = '直连线路(入口=出口)不能有中间节点';
+    if (!form.name.trim()) errs.name = "请输入线路名称";
+    if (form.entryNodeId == null) errs.entryNodeId = "请选择入口节点";
+    if (form.exitNodeId == null) errs.exitNodeId = "请选择出口节点";
+    if (form.transport === "wg" && form.wgNetworkId == null) errs.wgNetworkId = "组网传输必须选择组网";
+    if (form.entryNodeId === form.exitNodeId && form.hopNodeIds.length > 0) {
+      errs.hopNodeIds = "直连线路(入口=出口)不能有中间节点";
     }
     setErrors(errs);
     return Object.keys(errs).length === 0;
@@ -158,22 +142,22 @@ export default function LinkPage() {
     try {
       const payload = {
         name: form.name,
-        wgNetworkId: form.transport === 'wg' ? form.wgNetworkId : null,
+        wgNetworkId: form.transport === "wg" ? form.wgNetworkId : null,
         transport: form.transport,
         entryNodeId: form.entryNodeId,
         exitNodeId: form.exitNodeId,
-        hopNodeIds: form.hopNodeIds
+        hopNodeIds: form.hopNodeIds,
       };
       const res = isEdit ? await updateLink({ id: form.id, ...payload }) : await createLink(payload);
       if (res.code === 0) {
-        toast.success(isEdit ? '线路更新成功' : '线路创建成功');
+        toast.success(isEdit ? "线路更新成功" : "线路创建成功");
         setDialogOpen(false);
         loadLinks();
       } else {
-        toast.error(res.msg || '操作失败');
+        toast.error(res.msg || "操作失败");
       }
-    } catch (e) {
-      toast.error('网络错误，请重试');
+    } catch {
+      toast.error("网络错误，请重试");
     } finally {
       setSubmitLoading(false);
     }
@@ -185,14 +169,14 @@ export default function LinkPage() {
     try {
       const res = await deleteLink(deleteTarget.id);
       if (res.code === 0) {
-        toast.success('线路删除成功');
+        toast.success("线路删除成功");
         setDeleteTarget(null);
         loadLinks();
       } else {
-        toast.error(res.msg || '删除失败');
+        toast.error(res.msg || "删除失败");
       }
-    } catch (e) {
-      toast.error('网络错误，请重试');
+    } catch {
+      toast.error("网络错误，请重试");
     } finally {
       setDeleteLoading(false);
     }
@@ -201,77 +185,96 @@ export default function LinkPage() {
   const handleRedeploy = async (link: LinkItem) => {
     try {
       const res = await redeployLink(link.id);
-      if (res.code === 0) toast.success('线路重新下发成功');
-      else toast.error(res.msg || '重新下发失败');
-    } catch (e) {
-      toast.error('网络错误，请重试');
+      if (res.code === 0) toast.success("线路重新下发成功");
+      else toast.error(res.msg || "重新下发失败");
+    } catch {
+      toast.error("网络错误，请重试");
     }
   };
 
   const hopNames = (link: LinkItem) => {
-    const nameMap = new Map(nodeOptions.map(n => [n.id, n.name]));
-    let hops: number[] = [];
-    try {
-      hops = link.hopNodeIds ? JSON.parse(link.hopNodeIds) : [];
-    } catch (e) {
-      hops = [];
-    }
-    return hops.map(id => nameMap.get(id) || `#${id}`);
+    const nameMap = new Map(nodeOptions.map((n) => [n.id, n.name]));
+    return parseHops(link.hopNodeIds).map((id) => nameMap.get(id) || `#${id}`);
   };
 
   return (
-    <div className="p-4 lg:p-6 space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-xl font-bold">线路管理</h2>
-          <p className="text-sm text-default-500 mt-1">线路 = 入口 → 中间节点 → 出口(落地), 可基于组网或直连</p>
-        </div>
-        <Button color="primary" onPress={openCreate}>新建线路</Button>
-      </div>
+    <div className="p-4 lg:p-6 max-w-7xl mx-auto">
+      <PageHeader title="线路管理" description="线路 = 入口 → 中间节点 → 出口（落地），可基于组网或公网直连">
+        <Button variant="primary" onClick={openCreate}>
+          <IconPlus size={14} /> 新建线路
+        </Button>
+      </PageHeader>
 
       {loading ? (
-        <div className="flex justify-center py-20"><Spinner size="lg" /></div>
+        <PageLoading />
       ) : linkList.length === 0 ? (
-        <Card className="mt-4">
-          <CardBody className="text-center text-default-500 py-16">暂无线路, 点击右上角"新建线路"创建</CardBody>
+        <Card>
+          <EmptyState
+            title="暂无线路"
+            description="线路是转发任务的路径单元；也可以直接在「转发管理」里用一体化向导自动创建"
+          />
         </Card>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {linkList.map(link => {
+          {linkList.map((link) => {
             const entryOnline = link.entryNodeStatus === 1;
             const exitOnline = link.exitNodeStatus === 1;
             return (
-              <Card key={link.id}>
-                <CardHeader className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold">{link.name}</span>
-                    <Chip size="sm" color="primary" variant="flat">{strategyText(link.transport)}</Chip>
-                    {link.wgNetworkName && <Chip size="sm" variant="flat">{link.wgNetworkName}</Chip>}
+              <Card key={link.id} className="space-y-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="font-semibold text-fg truncate text-[14px]">{link.name}</span>
+                    <Badge tone="accent">{transportLabel[link.transport] || link.transport}</Badge>
+                    {link.wgNetworkName && <Badge>{link.wgNetworkName}</Badge>}
                   </div>
-                  <div className="flex gap-1">
-                    <Button size="sm" variant="flat" onPress={() => handleRedeploy(link)}>重发</Button>
-                    <Button size="sm" variant="light" onPress={() => openEdit(link)}>编辑</Button>
-                    <Button size="sm" variant="light" color="danger" onPress={() => setDeleteTarget(link)}>删除</Button>
+                  <div className="flex gap-1 shrink-0">
+                    <Button size="xs" onClick={() => handleRedeploy(link)}>
+                      <IconRefresh size={12} /> 重发
+                    </Button>
+                    <Button size="xs" onClick={() => openEdit(link)}>
+                      编辑
+                    </Button>
+                    <Button size="xs" variant="danger" onClick={() => setDeleteTarget(link)}>
+                      删除
+                    </Button>
                   </div>
-                </CardHeader>
-                <CardBody className="pt-0 space-y-2 text-sm">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <Chip size="sm" color={entryOnline ? 'success' : 'danger'} variant="dot">{link.entryNodeName || `#${link.entryNodeId}`}</Chip>
-                    <span className="text-default-400">→</span>
-                    {hopNames(link).map((name, i) => (
-                      <span key={i} className="flex items-center gap-2">
-                        <Chip size="sm" variant="flat">{name}</Chip>
-                        <span className="text-default-400">→</span>
-                      </span>
-                    ))}
-                    <Chip size="sm" color={exitOnline ? 'success' : 'danger'} variant="dot">{link.exitNodeName || `#${link.exitNodeId}`}</Chip>
+                </div>
+
+                {/* 路径 */}
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <Badge tone={entryOnline ? "neutral" : "danger"}>
+                    <StatusDot tone={entryOnline ? "success" : "danger"} />
+                    {link.entryNodeName || `#${link.entryNodeId}`}
+                  </Badge>
+                  <IconChevronRight size={12} className="text-faint" />
+                  {hopNames(link).map((name, i) => (
+                    <span key={i} className="flex items-center gap-1.5">
+                      <Badge>{name}</Badge>
+                      <IconChevronRight size={12} className="text-faint" />
+                    </span>
+                  ))}
+                  <Badge tone={exitOnline ? "neutral" : "danger"}>
+                    <StatusDot tone={exitOnline ? "success" : "danger"} />
+                    {link.exitNodeName || `#${link.exitNodeId}`}
+                  </Badge>
+                </div>
+
+                <div className="text-xs text-faint">
+                  共 {link.nodeCount || 2} 个节点 · 入口组网IP: <span className="font-mono">{link.entryWgIp || "--"}</span>
+                </div>
+
+                {link.latencies && Object.values(link.latencies).length > 0 && (
+                  <div className="pt-2 border-t border-line/60">
+                    <div className="text-[11px] text-faint mb-1.5">入口 → 各端点延迟</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {Object.values(link.latencies).map((e, i) => (
+                        <Badge key={i} tone={e.up ? latencyTone(e.ms) : "danger"}>
+                          {e.addr} {e.up ? formatLatency(e.ms) : "不可达"}
+                        </Badge>
+                      ))}
+                    </div>
                   </div>
-                  <div className="text-xs text-default-500">
-                    共 {link.nodeCount || 2} 个节点 · 入口组网IP: {link.entryWgIp || '--'}
-                  </div>
-                  <div className="text-xs text-default-500">入口→各端点延迟:</div>
-                  {latencyView(link)}
-                </CardBody>
+                )}
               </Card>
             );
           })}
@@ -279,133 +282,145 @@ export default function LinkPage() {
       )}
 
       {/* 创建/编辑弹窗 */}
-      <Modal isOpen={dialogOpen} onOpenChange={setDialogOpen} size="2xl" backdrop="blur" placement="center">
-        <ModalContent>
-          {(onClose: () => void) => (
-            <>
-              <ModalHeader>{isEdit ? '编辑线路' : '新建线路'}</ModalHeader>
-              <ModalBody>
-                <div className="space-y-4">
-                  <Input
-                    label="线路名称"
-                    placeholder="如: 华东A线"
-                    value={form.name}
-                    onChange={e => setForm({ ...form, name: e.target.value })}
-                    errorMessage={errors.name}
-                    isInvalid={!!errors.name}
-                    variant="bordered"
-                  />
-                  <RadioGroup
-                    label="节点间传输"
-                    orientation="horizontal"
-                    value={form.transport}
-                    onValueChange={v => setForm({ ...form, transport: v as LinkForm['transport'] })}
-                  >
-                    <Radio value="wg">组网(WG)</Radio>
-                    <Radio value="tls">TLS</Radio>
-                    <Radio value="tcp">TCP</Radio>
-                  </RadioGroup>
-                  {form.transport === 'wg' && (
-                    <Select
-                      label="组网"
-                      placeholder="选择组网"
-                      selectedKeys={form.wgNetworkId != null ? new Set([String(form.wgNetworkId)]) : new Set()}
-                      onSelectionChange={keys => {
-                        const arr = Array.from(keys);
-                        setForm({ ...form, wgNetworkId: arr.length ? Number(arr[0]) : null });
-                      }}
-                      errorMessage={errors.wgNetworkId}
-                      isInvalid={!!errors.wgNetworkId}
-                      variant="bordered"
-                    >
-                      {wgOptions.map(wg => (
-                        <SelectItem key={String(wg.id)} textValue={wg.name}>{wg.name} ({wg.name})</SelectItem>
-                      ))}
-                    </Select>
-                  )}
-                  <div className="grid grid-cols-2 gap-4">
-                    <Select
-                      label="入口节点"
-                      placeholder="选择入口节点"
-                      selectedKeys={form.entryNodeId != null ? new Set([String(form.entryNodeId)]) : new Set()}
-                      onSelectionChange={keys => {
-                        const arr = Array.from(keys);
-                        setForm({ ...form, entryNodeId: arr.length ? Number(arr[0]) : null });
-                      }}
-                      errorMessage={errors.entryNodeId}
-                      isInvalid={!!errors.entryNodeId}
-                      variant="bordered"
-                    >
-                      {nodeOptions.map(node => (
-                        <SelectItem key={String(node.id)} textValue={node.name}>
-                          {node.name} {node.status === 1 ? '(在线)' : '(离线)'}
-                        </SelectItem>
-                      ))}
-                    </Select>
-                    <Select
-                      label="出口(落地)节点"
-                      placeholder="选择出口节点"
-                      selectedKeys={form.exitNodeId != null ? new Set([String(form.exitNodeId)]) : new Set()}
-                      onSelectionChange={keys => {
-                        const arr = Array.from(keys);
-                        setForm({ ...form, exitNodeId: arr.length ? Number(arr[0]) : null });
-                      }}
-                      errorMessage={errors.exitNodeId}
-                      isInvalid={!!errors.exitNodeId}
-                      variant="bordered"
-                    >
-                      {nodeOptions.map(node => (
-                        <SelectItem key={String(node.id)} textValue={node.name}>
-                          {node.name} {node.status === 1 ? '(在线)' : '(离线)'}
-                        </SelectItem>
-                      ))}
-                    </Select>
-                  </div>
-                  <Select
-                    label="中间节点(可选, 按顺序多跳)"
-                    selectionMode="multiple"
-                    placeholder="选择中间节点"
-                    selectedKeys={new Set(form.hopNodeIds.map(String))}
-                    onSelectionChange={keys => setForm({ ...form, hopNodeIds: Array.from(keys).map(Number) })}
-                    errorMessage={errors.hopNodeIds}
-                    isInvalid={!!errors.hopNodeIds}
-                    variant="bordered"
-                  >
-                    {nodeOptions
-                      .filter(n => n.id !== form.entryNodeId && n.id !== form.exitNodeId)
-                      .map(node => (
-                        <SelectItem key={String(node.id)} textValue={node.name}>
-                          {node.name} {node.status === 1 ? '(在线)' : '(离线)'}
-                        </SelectItem>
-                      ))}
-                  </Select>
-                  {form.entryNodeId != null && form.exitNodeId != null && form.entryNodeId === form.exitNodeId && (
-                    <p className="text-xs text-default-400">入口=出口时为直连线路, 无需组网</p>
-                  )}
-                </div>
-              </ModalBody>
-              <ModalFooter>
-                <Button color="default" variant="light" onPress={onClose}>取消</Button>
-                <Button color="primary" onPress={handleSubmit} isLoading={submitLoading}>确定</Button>
-              </ModalFooter>
-            </>
+      <Modal
+        open={dialogOpen}
+        onClose={() => setDialogOpen(false)}
+        title={isEdit ? "编辑线路" : "新建线路"}
+        width="max-w-xl"
+        footer={
+          <>
+            <Button onClick={() => setDialogOpen(false)}>取消</Button>
+            <Button variant="primary" onClick={handleSubmit} loading={submitLoading}>
+              确定
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <Input
+            label="线路名称"
+            placeholder="如: 华东A线"
+            value={form.name}
+            onChange={(e) => setForm({ ...form, name: e.target.value })}
+            error={errors.name}
+          />
+
+          <div>
+            <div className="mb-1.5 text-[13px] font-medium text-fg">节点间传输</div>
+            <SegmentedControl
+              value={form.transport}
+              onChange={(v) => setForm({ ...form, transport: v })}
+              options={[
+                { value: "wg", label: "组网 (WG)" },
+                { value: "tls", label: "TLS" },
+                { value: "tcp", label: "TCP" },
+              ]}
+            />
+          </div>
+
+          {form.transport === "wg" && (
+            <Select
+              label="组网"
+              value={form.wgNetworkId != null ? String(form.wgNetworkId) : ""}
+              onChange={(e) => setForm({ ...form, wgNetworkId: e.target.value ? Number(e.target.value) : null })}
+              error={errors.wgNetworkId}
+            >
+              <option value="">选择组网</option>
+              {wgOptions.map((wg) => (
+                <option key={wg.id} value={wg.id}>
+                  {wg.name}
+                </option>
+              ))}
+            </Select>
           )}
-        </ModalContent>
+
+          <div className="grid grid-cols-2 gap-4">
+            <Select
+              label="入口节点"
+              value={form.entryNodeId != null ? String(form.entryNodeId) : ""}
+              onChange={(e) => setForm({ ...form, entryNodeId: e.target.value ? Number(e.target.value) : null })}
+              error={errors.entryNodeId}
+            >
+              <option value="">选择入口</option>
+              {nodeOptions.map((node) => (
+                <option key={node.id} value={node.id}>
+                  {node.name} {node.status === 1 ? "(在线)" : "(离线)"}
+                </option>
+              ))}
+            </Select>
+            <Select
+              label="出口(落地)节点"
+              value={form.exitNodeId != null ? String(form.exitNodeId) : ""}
+              onChange={(e) => setForm({ ...form, exitNodeId: e.target.value ? Number(e.target.value) : null })}
+              error={errors.exitNodeId}
+            >
+              <option value="">选择出口</option>
+              {nodeOptions.map((node) => (
+                <option key={node.id} value={node.id}>
+                  {node.name} {node.status === 1 ? "(在线)" : "(离线)"}
+                </option>
+              ))}
+            </Select>
+          </div>
+
+          {/* 中间节点: 按顺序添加 */}
+          <div>
+            <div className="text-[12px] text-muted mb-1.5">中间节点（可选，按加入顺序多跳）</div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {form.hopNodeIds.map((nodeId, idx) => (
+                <span
+                  key={idx}
+                  className="inline-flex items-center gap-1 px-2 h-7 rounded-md bg-surface-2 border border-line text-xs text-fg"
+                >
+                  {nodeOptions.find((n) => n.id === nodeId)?.name || `#${nodeId}`}
+                  <button
+                    className="text-faint hover:text-danger"
+                    onClick={() => setForm({ ...form, hopNodeIds: form.hopNodeIds.filter((_, i) => i !== idx) })}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+              <select
+                className="h-7 px-2 rounded-md bg-surface-2 border border-line text-xs text-muted outline-none cursor-pointer hover:border-line-strong"
+                value=""
+                onChange={(e) => {
+                  if (e.target.value) {
+                    setForm({ ...form, hopNodeIds: [...form.hopNodeIds, Number(e.target.value)] });
+                  }
+                }}
+              >
+                <option value="">+ 添加中间节点</option>
+                {nodeOptions
+                  .filter((n) => n.id !== form.entryNodeId && n.id !== form.exitNodeId && !form.hopNodeIds.includes(n.id))
+                  .map((node) => (
+                    <option key={node.id} value={node.id}>
+                      {node.name} {node.status === 1 ? "(在线)" : "(离线)"}
+                    </option>
+                  ))}
+              </select>
+            </div>
+            {errors.hopNodeIds && <p className="mt-1 text-xs text-danger">{errors.hopNodeIds}</p>}
+          </div>
+
+          {form.entryNodeId != null && form.entryNodeId === form.exitNodeId && (
+            <p className="text-xs text-faint">入口=出口时为直连线路，无需组网</p>
+          )}
+        </div>
       </Modal>
 
-      {/* 删除确认 */}
-      <Modal isOpen={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)} size="sm">
-        <ModalContent>
-          <ModalHeader>删除线路</ModalHeader>
-          <ModalBody>
-            确定删除线路 <b>{deleteTarget?.name}</b> 吗? 将移除所有中继服务与链配置。
-          </ModalBody>
-          <ModalFooter>
-            <Button color="default" variant="light" onPress={() => setDeleteTarget(null)}>取消</Button>
-            <Button color="danger" onPress={handleDelete} isLoading={deleteLoading}>删除</Button>
-          </ModalFooter>
-        </ModalContent>
-      </Modal>
+      <ConfirmModal
+        open={!!deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={handleDelete}
+        loading={deleteLoading}
+        title="删除线路"
+        message={
+          <>
+            确定删除线路 <b className="text-fg">{deleteTarget?.name}</b> 吗? 将移除所有中继服务与链配置。
+          </>
+        }
+      />
     </div>
   );
 }

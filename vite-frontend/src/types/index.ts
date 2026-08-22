@@ -1,9 +1,3 @@
-import { SVGProps } from "react";
-
-export type IconSvgProps = SVGProps<SVGSVGElement> & {
-  size?: number;
-};
-
 // 节点
 export interface Node {
   id: number;
