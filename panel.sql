@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS `node_wg` (
   `ip` varchar(50) NOT NULL COMMENT '组网内IP',
   `hub` int(10) NOT NULL DEFAULT '0' COMMENT 'hub模式下是否为中心节点',
   `public_key` varchar(100) DEFAULT NULL COMMENT '节点公钥(节点端生成上报)',
+  `egress` varchar(64) NOT NULL DEFAULT '' COMMENT '出口线路: 空=不管理, auto=自动故障切换, 其他=网卡名',
   `created_time` bigint(20) NOT NULL,
   `updated_time` bigint(20) NOT NULL,
   `status` int(10) NOT NULL DEFAULT '1',

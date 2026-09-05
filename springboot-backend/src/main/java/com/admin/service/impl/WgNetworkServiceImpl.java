@@ -69,6 +69,22 @@ public class WgNetworkServiceImpl extends ServiceImpl<WgNetworkMapper, WgNetwork
 
     @Override
     public R createNetwork(WgNetworkDto dto) {
+        // 网段/端口留空时自动分配不重复的值, 避免与既有组网冲突
+        if (dto.getSubnet() == null || dto.getSubnet().trim().isEmpty()) {
+            String subnet = allocateSubnet();
+            if (subnet == null) {
+                return R.err("自动分配网段失败: 10.10.0.0/16 内的 /24 网段已用尽, 请手动指定");
+            }
+            dto.setSubnet(subnet);
+        }
+        if (dto.getListenPort() == null || dto.getListenPort() == 0) {
+            Integer port = allocateListenPort();
+            if (port == null) {
+                return R.err("自动分配监听端口失败: 51820-65535 已用尽, 请手动指定");
+            }
+            dto.setListenPort(port);
+        }
+
         R validateResult = validateBase(dto);
         if (validateResult.getCode() != 0) {
             return validateResult;
@@ -96,7 +112,12 @@ public class WgNetworkServiceImpl extends ServiceImpl<WgNetworkMapper, WgNetwork
         if (syncResult.getCode() != 0) {
             return syncResult;
         }
-        return R.ok();
+
+        Map<String, Object> created = new HashMap<>();
+        created.put("id", network.getId());
+        created.put("subnet", network.getSubnet());
+        created.put("listenPort", network.getListenPort());
+        return R.ok(created);
     }
 
     @Override
@@ -136,6 +157,17 @@ public class WgNetworkServiceImpl extends ServiceImpl<WgNetworkMapper, WgNetwork
             Set<Integer> oldIds = new HashSet<>();
             for (NodeWg nw : nodeWgMapper.selectList(new QueryWrapper<NodeWg>().eq("wg_network_id", id))) {
                 oldIds.add(nw.getNodeId());
+            }
+            // 已存在成员的出口线路更新
+            for (WgMemberDto m : dto.getMembers()) {
+                if (m.getNodeId() == null || !oldIds.contains(m.getNodeId()) || m.getEgress() == null) continue;
+                NodeWg nw = nodeWgMapper.selectOne(new QueryWrapper<NodeWg>()
+                        .eq("wg_network_id", id).eq("node_id", m.getNodeId()));
+                if (nw != null && !m.getEgress().equals(nw.getEgress() == null ? "" : nw.getEgress())) {
+                    nw.setEgress(m.getEgress());
+                    nw.setUpdatedTime(System.currentTimeMillis());
+                    nodeWgMapper.updateById(nw);
+                }
             }
             for (Integer nodeId : newIds) {
                 if (!oldIds.contains(nodeId)) {
@@ -262,6 +294,9 @@ public class WgNetworkServiceImpl extends ServiceImpl<WgNetworkMapper, WgNetwork
 			}
         }
 
+		// 阶段2.5: 按成员配置下发出口线路策略(双线主机9929/CN2等)。旧版Agent不支持时忽略。
+		applyEgressPolicies(network, members);
+
 		// WireGuard 在首次下发 peer、切换端点或穿过 NAT 时需要短暂完成握手。
 		// 立即 ICMP 会把“尚未握手”缓存成不可达，导致页面长期显示假阴性。
 		if (!applied.isEmpty() && members.size() > 1) {
@@ -381,6 +416,145 @@ public class WgNetworkServiceImpl extends ServiceImpl<WgNetworkMapper, WgNetwork
     }
 
     /**
+     * 设置某个成员到对端的出口线路, 并立即在该节点生效。
+     * egress: ""=清除策略(跟随系统路由); "auto"=自动故障切换; 其他=指定出口网卡名。
+     */
+    @Override
+    public R setMemberEgress(Long networkId, Integer nodeId, String egress) {
+        WgNetwork network = this.getById(networkId);
+        if (network == null) {
+            return R.err(ERROR_NETWORK_NOT_FOUND);
+        }
+        Node node = nodeService.getById(nodeId);
+        if (node == null) {
+            return R.err(String.format(ERROR_NODE_NOT_FOUND, nodeId));
+        }
+        NodeWg member = nodeWgMapper.selectOne(new QueryWrapper<NodeWg>()
+                .eq("wg_network_id", networkId.intValue()).eq("node_id", nodeId));
+        if (member == null) {
+            return R.err(ERROR_MEMBER_NOT_FOUND);
+        }
+
+        member.setEgress(egress == null ? "" : egress);
+        member.setUpdatedTime(System.currentTimeMillis());
+        nodeWgMapper.updateById(member);
+
+        String name = network.getId().toString();
+        if (member.getEgress().isEmpty()) {
+            try {
+                GostUtil.WgClearEgress(node.getId(), name);
+            } catch (Exception e) {
+                log.warn("清除出口策略失败 node={}: {}", node.getId(), e.getMessage());
+            }
+            return R.ok("已清除出口策略, 恢复跟随系统路由");
+        }
+
+        List<String> dests = memberEgressDests(network, members(networkId), member);
+        if (dests.isEmpty()) {
+            return R.err("该成员没有固定的对端端点(中心节点由分支漫游接入), 无需设置出口");
+        }
+        String iface = "auto".equals(member.getEgress()) ? "" : member.getEgress();
+        List<String> failed = new ArrayList<>();
+        for (String dest : dests) {
+            try {
+                GostDto result = GostUtil.WgSetEgress(node.getId(), name, dest, iface);
+                if (!isGostOperationSuccess(result)) {
+                    failed.add(dest + ": " + (result == null ? "节点无响应" : result.getMsg()));
+                }
+            } catch (Exception e) {
+                failed.add(dest + ": " + e.getMessage());
+            }
+        }
+        if (!failed.isEmpty()) {
+            return R.err("出口策略下发失败: " + String.join("; ", failed));
+        }
+        return R.ok("出口线路已生效" + (iface.isEmpty() ? "(自动故障切换)" : ": " + iface));
+    }
+
+    /** 查询节点的候选出口网卡(供前端下拉选择) */
+    @Override
+    public R listNodeEgressIfaces(Integer nodeId) {
+        Node node = nodeService.getById(nodeId);
+        if (node == null) {
+            return R.err(String.format(ERROR_NODE_NOT_FOUND, nodeId));
+        }
+        GostDto result = GostUtil.WgListEgress(nodeId.longValue());
+        if (!isGostOperationSuccess(result)) {
+            String message = result == null ? "节点无响应" : result.getMsg();
+            if (isUnknownCommand(result)) {
+                return R.err("节点版本过旧, 请先升级节点到 1.3.0");
+            }
+            return R.err("读取出口网卡失败: " + message);
+        }
+        return R.ok(result.getData());
+    }
+
+    /**
+     * 阶段2.5: 按成员配置把出口线路策略下发到各节点。
+     * 只对"有固定对端端点"的成员生效(hub模式分支/mesh成员); 中心节点对分支是漫游端点, 不需要。
+     */
+    private void applyEgressPolicies(WgNetwork network, List<NodeWg> members) {
+        for (NodeWg member : members) {
+            if (member.getEgress() == null || member.getEgress().isEmpty()) continue;
+            Node node = nodeService.getById(member.getNodeId());
+            if (node == null || node.getStatus() == null || node.getStatus() != 1) continue;
+
+            List<String> dests = memberEgressDests(network, members, member);
+            if (dests.isEmpty()) continue;
+            String iface = "auto".equals(member.getEgress()) ? "" : member.getEgress();
+            for (String dest : dests) {
+                try {
+                    GostDto result = GostUtil.WgSetEgress(node.getId(), network.getId().toString(), dest, iface);
+                    if (!isGostOperationSuccess(result)) {
+                        String message = isUnknownCommand(result) ? "节点版本过旧, 请升级到1.3.0"
+                                : (result == null ? "节点无响应" : result.getMsg());
+                        log.warn("下发出口线路失败 node={} dest={}: {}", node.getId(), dest, message);
+                    }
+                } catch (Exception e) {
+                    log.warn("下发出口线路失败 node={} dest={}: {}", node.getId(), dest, e.getMessage());
+                }
+            }
+        }
+    }
+
+    /** 计算某成员需要设置出口的对端endpoint列表 */
+    private List<String> memberEgressDests(WgNetwork network, List<NodeWg> members) {
+        return memberEgressDests(network, members, null);
+    }
+
+    private List<String> memberEgressDests(WgNetwork network, List<NodeWg> members, NodeWg target) {
+        NodeWg member = target;
+        List<String> dests = new ArrayList<>();
+        if ("hub".equals(network.getMode())) {
+            if (member != null && member.getHub() != null && member.getHub() == 1) {
+                return dests; // 中心节点无固定endpoint
+            }
+            for (NodeWg other : members) {
+                if (other.getHub() != null && other.getHub() == 1) {
+                    Node hubNode = nodeService.getById(other.getNodeId());
+                    if (hubNode != null && hubNode.getServerIp() != null && !hubNode.getServerIp().isBlank()) {
+                        dests.add(hubNode.getServerIp());
+                    }
+                }
+            }
+        } else {
+            for (NodeWg other : members) {
+                if (member != null && Objects.equals(other.getId(), member.getId())) continue;
+                Node otherNode = nodeService.getById(other.getNodeId());
+                if (otherNode != null && otherNode.getServerIp() != null && !otherNode.getServerIp().isBlank()) {
+                    dests.add(otherNode.getServerIp());
+                }
+            }
+        }
+        return dests;
+    }
+
+    private List<NodeWg> members(Long networkId) {
+        return nodeWgMapper.selectList(new QueryWrapper<NodeWg>()
+                .eq("wg_network_id", networkId.intValue()).eq("status", 1));
+    }
+
+    /**
      * 通用链路探测器只支持 TCP 地址，不能接管 wg:* 的 ICMP 目标。每次组网同步后
      * 重新下发非 WireGuard 探测项，同时清除旧版本误下发到 Agent 的 wg:* 项。
      */
@@ -462,6 +636,7 @@ public class WgNetworkServiceImpl extends ServiceImpl<WgNetworkMapper, WgNetwork
             md.setIp(member.getIp());
             md.setHub(member.getHub());
             md.setPublicKey(member.getPublicKey());
+            md.setEgress(member.getEgress() == null ? "" : member.getEgress());
             md.setApplied(member.getPublicKey() == null || member.getPublicKey().isEmpty() ? 0 : 1);
             md.setLatencies(new java.util.HashMap<>());
             // 该节点到组网内其他节点的延迟
@@ -592,6 +767,64 @@ public class WgNetworkServiceImpl extends ServiceImpl<WgNetworkMapper, WgNetwork
         return null;
     }
 
+    /**
+     * 自动分配不重复的组网网段: 从 10.10.0.0/16 中逐个尝试 /24,
+     * 跳过与任何既有组网网段重叠的候选, 避免同宿主机多张 WG 接口路由冲突。
+     */
+    private String allocateSubnet() {
+        List<WgNetwork> networks = this.list();
+        long base = ipv4ToLong("10.10.0.0");
+        for (long n = 0; n < 256; n++) {
+            long candidate = base + (n << 8);
+            if (!subnetRangeConflicts(candidate, 24, networks)) {
+                return longToIpv4(candidate) + "/24";
+            }
+        }
+        return null;
+    }
+
+    /** 自动分配监听端口: 从 51820 起取第一个未被其他组网占用的端口。 */
+    private Integer allocateListenPort() {
+        Set<Integer> used = new HashSet<>();
+        for (WgNetwork network : this.list()) {
+            if (network.getListenPort() != null) {
+                used.add(network.getListenPort());
+            }
+        }
+        for (int port = 51820; port <= 65535; port++) {
+            if (!used.contains(port)) {
+                return port;
+            }
+        }
+        return null;
+    }
+
+    /** 判断候选网段 [network, broadcast] 是否与任何既有组网网段重叠 */
+    private boolean subnetRangeConflicts(long candidateNetwork, int candidatePrefix, List<WgNetwork> networks) {
+        long candidateMask = (0xffffffffL << (32 - candidatePrefix)) & 0xffffffffL;
+        long candidateStart = candidateNetwork & candidateMask;
+        long candidateEnd = candidateStart | (~candidateMask & 0xffffffffL);
+        for (WgNetwork network : networks) {
+            if (network.getSubnet() == null) continue;
+            String[] parts = network.getSubnet().split("/");
+            if (parts.length != 2) continue;
+            try {
+                long address = ipv4ToLong(parts[0]);
+                int prefix = Integer.parseInt(parts[1].trim());
+                if (prefix < 0 || prefix > 32) continue;
+                long mask = (0xffffffffL << (32 - prefix)) & 0xffffffffL;
+                long start = address & mask;
+                long end = start | (~mask & 0xffffffffL);
+                if (candidateStart <= end && start <= candidateEnd) {
+                    return true;
+                }
+            } catch (IllegalArgumentException ignored) {
+                // 无法解析的网段(NumberFormatException为其子类)不参与冲突判断
+            }
+        }
+        return false;
+    }
+
 	private long ipv4ToLong(String value) {
 		String[] octets = value.split("\\.", -1);
 		if (octets.length != 4) throw new IllegalArgumentException("invalid ipv4");
@@ -645,7 +878,8 @@ public class WgNetworkServiceImpl extends ServiceImpl<WgNetworkMapper, WgNetwork
                 if (node == null) continue;
                 JSONObject peer = buildPeer(other.getPublicKey(),
 						formatEndpoint(node.getServerIp(), network.getListenPort()),
-						java.util.Collections.singletonList(other.getIp() + "/32"));
+						java.util.Collections.singletonList(other.getIp() + "/32"),
+						other.getIp());
                 peers.add(peer);
             }
         } else {
@@ -656,7 +890,8 @@ public class WgNetworkServiceImpl extends ServiceImpl<WgNetworkMapper, WgNetwork
                     if (other.getPublicKey() == null) continue;
                     // 分支不监听固定端口，由其主动握手后让 hub 学习 endpoint。
                     JSONObject peer = buildPeer(other.getPublicKey(),
-							"", java.util.Collections.singletonList(other.getIp() + "/32"));
+							"", java.util.Collections.singletonList(other.getIp() + "/32"),
+							other.getIp());
                     peers.add(peer);
                 }
             } else {
@@ -672,7 +907,8 @@ public class WgNetworkServiceImpl extends ServiceImpl<WgNetworkMapper, WgNetwork
                     if (hubNode != null) {
                         JSONObject peer = buildPeer(hub.getPublicKey(),
 								formatEndpoint(hubNode.getServerIp(), network.getListenPort()),
-								java.util.Collections.singletonList(network.getSubnet()));
+								java.util.Collections.singletonList(network.getSubnet()),
+								hub.getIp());
                         peers.add(peer);
                     }
                 }
@@ -682,7 +918,7 @@ public class WgNetworkServiceImpl extends ServiceImpl<WgNetworkMapper, WgNetwork
         return req;
     }
 
-    private JSONObject buildPeer(String publicKey, String endpoint, List<String> allowedIpValues) {
+    private JSONObject buildPeer(String publicKey, String endpoint, List<String> allowedIpValues, String wgIp) {
         JSONObject peer = new JSONObject();
         peer.put("publicKey", publicKey);
         peer.put("endpoint", endpoint);
@@ -690,6 +926,9 @@ public class WgNetworkServiceImpl extends ServiceImpl<WgNetworkMapper, WgNetwork
 		allowedIps.addAll(allowedIpValues);
         peer.put("allowedIps", allowedIps);
         peer.put("persistentKeepalive", KEEPALIVE);
+        if (wgIp != null) {
+            peer.put("wgIp", wgIp);
+        }
         return peer;
     }
 

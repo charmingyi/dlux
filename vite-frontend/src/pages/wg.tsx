@@ -21,13 +21,22 @@ import {
   createWgNetwork,
   deleteWgNetwork,
   getNodeList,
+  getWgEgressIfaces,
   getWgNetworkList,
   getWgNetworkStatus,
+  setWgMemberEgress,
   syncWgNetwork,
   updateWgNetwork,
 } from "@/api";
 import { formatBytes, formatLatency, latencyTone } from "@/utils/format";
-import type { WgMemberRuntime, WgNetwork, WgNetworkRuntime, WgPeerRuntime } from "@/types";
+import type {
+  WgEgressIface,
+  WgMember,
+  WgMemberRuntime,
+  WgNetwork,
+  WgNetworkRuntime,
+  WgPeerRuntime,
+} from "@/types";
 
 interface NodeOption {
   id: number;
@@ -39,8 +48,10 @@ interface NodeOption {
 interface WgForm {
   id: number | null;
   name: string;
+  /** 空 = 自动分配不重复网段 */
   subnet: string;
   mode: "mesh" | "hub";
+  /** 0 = 自动分配端口 */
   listenPort: number;
   mtu: number;
   nodeIds: number[];
@@ -50,9 +61,9 @@ interface WgForm {
 const defaultForm: WgForm = {
   id: null,
   name: "",
-  subnet: "10.10.0.0/24",
+  subnet: "",
   mode: "mesh",
-  listenPort: 51820,
+  listenPort: 0,
   mtu: 1420,
   nodeIds: [],
   hubNodeId: null,
@@ -126,6 +137,50 @@ export default function WgPage() {
     }
   };
 
+  // 成员出口线路: 每节点的候选网卡懒加载, "failed" 表示读取失败(节点版本过旧等)
+  const [egressOptions, setEgressOptions] = useState<Record<number, WgEgressIface[] | "failed">>({});
+  const [egressSaving, setEgressSaving] = useState<string | null>(null);
+
+  const loadEgressIfaces = async (nodeId: number) => {
+    if (egressOptions[nodeId]) return;
+    try {
+      const res = await getWgEgressIfaces(nodeId);
+      if (res.code === 0) {
+        setEgressOptions((m) => ({ ...m, [nodeId]: res.data?.ifaces || [] }));
+      } else {
+        toast.error(res.msg || "读取出口网卡失败");
+        setEgressOptions((m) => ({ ...m, [nodeId]: "failed" }));
+      }
+    } catch {
+      toast.error("网络错误，请重试");
+      setEgressOptions((m) => ({ ...m, [nodeId]: "failed" }));
+    }
+  };
+
+  const changeEgress = async (network: WgNetwork, member: WgMember, value: string) => {
+    const key = `${network.id}:${member.nodeId}`;
+    setEgressSaving(key);
+    toast.loading("正在下发出口线路…", { id: "wg-egress" });
+    try {
+      const res = await setWgMemberEgress(network.id, member.nodeId, value);
+      toast.dismiss("wg-egress");
+      if (res.code === 0) {
+        toast.success(res.msg || "出口线路已更新");
+        await loadNetworks();
+      } else toast.error(res.msg || "设置失败");
+    } catch {
+      toast.dismiss("wg-egress");
+      toast.error("网络错误，请重试");
+    } finally {
+      setEgressSaving(null);
+    }
+  };
+
+  const ifacesFor = (nodeId: number): WgEgressIface[] => {
+    const value = egressOptions[nodeId];
+    return value && value !== "failed" ? value : [];
+  };
+
   useEffect(() => {
     loadNetworks();
     loadNodes();
@@ -172,8 +227,11 @@ export default function WgPage() {
   const validateForm = () => {
     const nextErrors: Record<string, string> = {};
     if (!form.name.trim()) nextErrors.name = "请输入组网名称";
-    if (!/^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/.test(form.subnet)) nextErrors.subnet = "网段格式错误，如 10.10.0.0/24";
-    if (form.listenPort < 1024 || form.listenPort > 65535) nextErrors.listenPort = "端口需在 1024-65535 之间";
+    // 网段/端口留空表示自动分配, 仅在填写时校验格式
+    if (form.subnet.trim() && !/^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/.test(form.subnet.trim()))
+      nextErrors.subnet = "网段格式错误，如 10.10.0.0/24；留空自动分配";
+    if (form.listenPort !== 0 && (form.listenPort < 1024 || form.listenPort > 65535))
+      nextErrors.listenPort = "端口需在 1024-65535 之间，留空自动分配";
     if (form.mtu < 576 || form.mtu > 9000) nextErrors.mtu = "MTU 需在 576-9000 之间";
     if (form.nodeIds.length < 2) nextErrors.nodeIds = "组网至少选择两个节点";
     if (form.mode === "hub" && (form.hubNodeId == null || !form.nodeIds.includes(form.hubNodeId))) {
@@ -200,7 +258,12 @@ export default function WgPage() {
       };
       const res = isEdit ? await updateWgNetwork({ id: form.id, ...payload }) : await createWgNetwork(payload);
       if (res.code === 0) {
-        toast.success(res.msg || (isEdit ? "组网更新成功" : "组网创建成功"));
+        const created = !isEdit && res.data ? res.data : null;
+        toast.success(
+          created
+            ? `组网创建成功：网段 ${created.subnet} · 端口 ${created.listenPort}`
+            : res.msg || (isEdit ? "组网更新成功" : "组网创建成功"),
+        );
         setDialogOpen(false);
         await loadNetworks();
       } else toast.error(res.msg || "操作失败");
@@ -412,6 +475,27 @@ export default function WgPage() {
                           </div>
                         </div>
 
+                        {/* 出口线路选择: 双线主机(如9929/CN2)为WG到对端流量选出口 */}
+                        <div className="flex items-center gap-2">
+                          <Select
+                            className="h-8 max-w-52 text-xs"
+                            value={member.egress ?? ""}
+                            title="WG 到对端的流量走哪张出口网卡"
+                            onMouseDown={() => loadEgressIfaces(member.nodeId)}
+                            onChange={(e) => changeEgress(network, member, e.target.value)}
+                            disabled={egressSaving === `${network.id}:${member.nodeId}`}
+                          >
+                            <option value="">出口：跟随系统路由</option>
+                            <option value="auto">自动（健康检查+故障切换）</option>
+                            {ifacesFor(member.nodeId).map((f) => (
+                              <option key={f.iface} value={f.iface}>
+                                出口 {f.iface} · 网关 {f.gateway || f.ip || "-"}
+                              </option>
+                            ))}
+                          </Select>
+                          <span className="text-[11px] text-faint">主线路故障时自动切换备用线路</span>
+                        </div>
+
                         {error ? (
                           <div className="rounded-lg bg-danger-soft px-3 py-2 text-xs text-danger">{error}</div>
                         ) : (
@@ -496,7 +580,7 @@ export default function WgPage() {
             />
             <Input
               label="组网网段"
-              placeholder="10.10.0.0/24"
+              placeholder="留空自动分配不重复网段"
               value={form.subnet}
               onChange={(e) => setForm({ ...form, subnet: e.target.value })}
               error={errors.subnet}
@@ -523,14 +607,18 @@ export default function WgPage() {
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <Input
-              label="UDP 监听端口"
-              type="number"
-              value={String(form.listenPort)}
-              onChange={(e) => setForm({ ...form, listenPort: Number(e.target.value) })}
-              error={errors.listenPort}
-              mono
-            />
+            <div>
+              <Input
+                label="UDP 监听端口"
+                type="number"
+                placeholder="留空自动分配"
+                value={form.listenPort === 0 ? "" : String(form.listenPort)}
+                onChange={(e) => setForm({ ...form, listenPort: Number(e.target.value) || 0 })}
+                error={errors.listenPort}
+                hint="同一宿主机跑多个组网时会自动错开端口"
+                mono
+              />
+            </div>
             <div>
               <Input
                 label="MTU"

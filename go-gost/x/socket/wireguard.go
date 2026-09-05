@@ -20,6 +20,7 @@ type WgPeer struct {
 	Endpoint            string   `json:"endpoint"`
 	AllowedIps          []string `json:"allowedIps"`
 	PersistentKeepalive int      `json:"persistentKeepalive,omitempty"`
+	WgIp                string   `json:"wgIp,omitempty"` // 对端组网IP, 供看门狗探测用
 }
 
 // WgApplyRequest 应用WireGuard网络配置请求
@@ -81,6 +82,11 @@ type wgLocalState struct {
 	PublicKey   string `json:"publicKey"`
 	AppliedHash string `json:"appliedHash"`
 	ListenPort  int    `json:"listenPort,omitempty"`
+	// LastRequest 最近一次成功应用的完整请求, 用于看门狗自愈(接口丢失重建/对端会话重置)。
+	LastRequest *WgApplyRequest `json:"lastRequest,omitempty"`
+	// LastEndpoints 最近一次期望的对端endpoint(按公钥)。空值表示该对端本就不配置endpoint
+	// (hub模式分支), 用于判断是否真的发生了 mesh->hub 切换, 避免误清动态学习的NAT端点。
+	LastEndpoints map[string]string `json:"lastEndpoints,omitempty"`
 }
 
 var (
@@ -212,7 +218,11 @@ func prepareWireGuard(req *WgPrepareRequest) (*WgApplyResponse, error) {
 func applyWireGuard(req *WgApplyRequest) (*WgApplyResponse, error) {
 	wgMu.Lock()
 	defer wgMu.Unlock()
+	return applyWireGuardLocked(req)
+}
 
+// applyWireGuardLocked 无锁版本, 供看门狗在已持锁时复用
+func applyWireGuardLocked(req *WgApplyRequest) (*WgApplyResponse, error) {
 	if req.Name == "" {
 		return nil, fmt.Errorf("组网名称不能为空")
 	}
@@ -242,6 +252,12 @@ func applyWireGuard(req *WgApplyRequest) (*WgApplyResponse, error) {
 			state.ListenPort = req.ListenPort
 			saveState(req.Name, state)
 		}
+		// 兼容旧状态文件: 补齐看门狗所需的自愈数据。
+		if state.LastRequest == nil {
+			state.LastRequest = req
+			saveState(req.Name, state)
+		}
+		wgWatchdogNotify(req.Name, req)
 		return &WgApplyResponse{
 			PublicKey: state.PublicKey,
 			Interface: iface,
@@ -297,24 +313,15 @@ func applyWireGuard(req *WgApplyRequest) (*WgApplyResponse, error) {
 			}
 		}
 	}
-	currentEndpoints := make(map[string]string)
-	if out, endpointErr := runCmd("wg", "show", iface, "endpoints"); endpointErr == nil {
-		for _, line := range strings.Split(out, "\n") {
-			fields := strings.Fields(line)
-			if len(fields) >= 2 {
-				currentEndpoints[fields[0]] = fields[1]
-			}
-		}
-	}
-
 	for _, peer := range req.Peers {
 		if peer.PublicKey == "" {
 			continue
 		}
-		// 从 mesh 切换到 hub 时，中心节点必须忘掉分支的旧固定 Endpoint，
-		// 才能根据分支主动握手重新学习 NAT 后地址。
+		// 仅当上一次期望配置里该 peer 有 endpoint、本次变为空时(真正的 mesh->hub 切换)，
+		// 中心节点才需要忘掉旧固定 Endpoint，以便根据分支主动握手重新学习 NAT 后地址。
+		// 平时的配置变更(加成员/改MTU等)不得清除动态学习到的端点，否则会造成不必要的断连。
 		if peer.Endpoint == "" {
-			if endpoint := currentEndpoints[peer.PublicKey]; endpoint != "" && endpoint != "(none)" {
+			if lastDesired := state.LastEndpoints[peer.PublicKey]; lastDesired != "" {
 				if _, err := runCmd("wg", "set", iface, "peer", peer.PublicKey, "remove"); err != nil {
 					cleanupCreated()
 					return nil, fmt.Errorf("清除peer旧endpoint失败: %v", err)
@@ -371,7 +378,16 @@ func applyWireGuard(req *WgApplyRequest) (*WgApplyResponse, error) {
 
 	state.AppliedHash = hash
 	state.ListenPort = req.ListenPort
+	state.LastRequest = req
+	lastEndpoints := make(map[string]string, len(req.Peers))
+	for _, peer := range req.Peers {
+		if peer.PublicKey != "" {
+			lastEndpoints[peer.PublicKey] = peer.Endpoint
+		}
+	}
+	state.LastEndpoints = lastEndpoints
 	saveState(req.Name, state)
+	wgWatchdogNotify(req.Name, req)
 	return &WgApplyResponse{
 		PublicKey: state.PublicKey,
 		Interface: iface,
@@ -538,11 +554,15 @@ func removeWireGuard(req *WgRemoveRequest) error {
 	if _, err := runCmd("ip", "link", "del", iface); err != nil {
 		// 接口不存在视为成功
 		if strings.Contains(err.Error(), "Cannot find device") || strings.Contains(err.Error(), "does not exist") {
+			wgWatchdogUnregister(req.Name)
+			WgEgressCleanup(req.Name)
 			removeState(req.Name)
 			return nil
 		}
 		return err
 	}
+	wgWatchdogUnregister(req.Name)
+	WgEgressCleanup(req.Name)
 	removeState(req.Name)
 	return nil
 }

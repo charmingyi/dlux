@@ -26,7 +26,17 @@ export interface WgMember {
   hub: number;
   publicKey?: string;
   applied?: number;
+  /** 出口线路: ""=不管理, auto=自动故障切换, 其他=指定网卡名 */
+  egress?: string;
   latencies?: Record<string, { key: string; addr: string; ms: number; up: boolean; ts: number }>;
+}
+
+/** 节点候选出口网卡 */
+export interface WgEgressIface {
+  iface: string;
+  ip: string;
+  gateway: string;
+  isDefault: boolean;
 }
 
 export interface WgNetwork {

@@ -71,4 +71,21 @@ public class WgController extends BaseController {
         return wgNetworkService.getNetworkStatus(id);
     }
 
+    @LogAnnotation
+    @RequireRole
+    @PostMapping("/setEgress")
+    public R setEgress(@RequestBody Map<String, Object> params) {
+        Long id = Long.valueOf(params.get("id").toString());
+        Integer nodeId = Integer.valueOf(params.get("nodeId").toString());
+        String egress = params.get("egress") == null ? "" : params.get("egress").toString();
+        return wgNetworkService.setMemberEgress(id, nodeId, egress);
+    }
+
+    @RequireRole
+    @PostMapping("/egressIfaces")
+    public R egressIfaces(@RequestBody Map<String, Object> params) {
+        Integer nodeId = Integer.valueOf(params.get("nodeId").toString());
+        return wgNetworkService.listNodeEgressIfaces(nodeId);
+    }
+
 }

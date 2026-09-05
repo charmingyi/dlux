@@ -36,6 +36,14 @@ type SystemInfo struct {
 	MemoryUsage      float64 `json:"memory_usage"`      // 内存使用率（百分比）
 }
 
+// agentVersion 当前Agent自身版本号(由 main 启动时注入, 作为自更新的默认目标)
+var agentVersion string
+
+// SetAgentVersion 注入Agent版本号
+func SetAgentVersion(v string) {
+	agentVersion = v
+}
+
 // NetworkStats 网络统计信息
 type NetworkStats struct {
 	BytesReceived    uint64 `json:"bytes_received"`    // 接收字节数
@@ -587,6 +595,19 @@ func (w *WebSocketReporter) routeCommand(cmd CommandMessage) {
 		pingResult, err = w.handlePingIps(cmd.Data)
 		response.Type = "PingIpsResponse"
 		response.Data = pingResult
+
+	// WG 出口线路管理(双线主机选择9929/CN2等出口)
+	case "WgListEgress":
+		var egressResult *WgListEgressResponse
+		egressResult, err = w.handleWgListEgress(cmd.Data)
+		response.Type = "WgListEgressResponse"
+		response.Data = egressResult
+	case "WgSetEgress":
+		err = w.handleWgSetEgress(cmd.Data)
+		response.Type = "WgSetEgressResponse"
+	case "WgClearEgress":
+		err = w.handleWgClearEgress(cmd.Data)
+		response.Type = "WgClearEgressResponse"
 
 	// 节点在线自更新
 	case "UpdateAgent":
@@ -1176,7 +1197,7 @@ func (w *WebSocketReporter) handlePingIps(data interface{}) ([]PingIpsResult, er
 // handleUpdateAgent 节点在线自更新: 下载最新release二进制并替换重启
 func (w *WebSocketReporter) handleUpdateAgent(data interface{}) error {
 	repoURL := "https://github.com/charmingyi/dlux"
-	version := "1.2.0"
+	version := agentVersion
 
 	var req struct {
 		Version string `json:"version"`
@@ -1195,6 +1216,12 @@ func (w *WebSocketReporter) handleUpdateAgent(data interface{}) error {
 			return fmt.Errorf("非法目标版本: %s", req.Version)
 		}
 		version = req.Version
+	}
+	if version == "" {
+		return fmt.Errorf("未指定目标版本")
+	}
+	if version == agentVersion {
+		return fmt.Errorf("当前已是版本 %s, 无需更新", version)
 	}
 
 	arch := runtime.GOARCH
@@ -1265,6 +1292,48 @@ func (w *WebSocketReporter) handleWgRemove(data interface{}) error {
 	}
 
 	return removeWireGuard(&req)
+}
+
+// handleWgListEgress 查询候选出口网卡
+func (w *WebSocketReporter) handleWgListEgress(data interface{}) (*WgListEgressResponse, error) {
+	var req WgListEgressRequest
+	if data != nil {
+		jsonData, err := json.Marshal(data)
+		if err != nil {
+			return nil, fmt.Errorf("序列化出口查询请求失败: %v", err)
+		}
+		if err := json.Unmarshal(jsonData, &req); err != nil {
+			return nil, fmt.Errorf("解析出口查询请求失败: %v", err)
+		}
+	}
+	return listWireGuardEgress(&req)
+}
+
+// handleWgSetEgress 设置组网对端出口线路
+func (w *WebSocketReporter) handleWgSetEgress(data interface{}) error {
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("序列化出口设置请求失败: %v", err)
+	}
+	var req WgSetEgressRequest
+	if err := json.Unmarshal(jsonData, &req); err != nil {
+		return fmt.Errorf("解析出口设置请求失败: %v", err)
+	}
+	return wgEgressSet(&req)
+}
+
+// handleWgClearEgress 清除组网出口策略
+func (w *WebSocketReporter) handleWgClearEgress(data interface{}) error {
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("序列化出口清理请求失败: %v", err)
+	}
+	var req WgClearEgressRequest
+	if err := json.Unmarshal(jsonData, &req); err != nil {
+		return fmt.Errorf("解析出口清理请求失败: %v", err)
+	}
+	wgEgressClear(req.Name)
+	return nil
 }
 
 // SendProbes 发送探测结果给面板

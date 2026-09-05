@@ -26,4 +26,10 @@ public interface WgNetworkService extends IService<WgNetwork> {
     /** 查询所有成员节点上的真实 WireGuard 运行状态。 */
     R getNetworkStatus(Long id);
 
+    /** 设置成员到对端的出口线路(egress: ""=清除, "auto"=自动故障切换, 其他=网卡名)。 */
+    R setMemberEgress(Long networkId, Integer nodeId, String egress);
+
+    /** 查询节点候选出口网卡。 */
+    R listNodeEgressIfaces(Integer nodeId);
+
 }

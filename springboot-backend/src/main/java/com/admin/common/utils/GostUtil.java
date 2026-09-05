@@ -231,6 +231,27 @@ public class GostUtil {
         return WebSocketServer.send_msg(node_id, req, "WgRemove");
     }
 
+    /** 查询节点的候选出口网卡(双线主机选择9929/CN2等)。 */
+    public static GostDto WgListEgress(Long node_id) {
+        return WebSocketServer.send_msg(node_id, new JSONObject(), "WgListEgress");
+    }
+
+    /** 设置组网对端出口线路: dest=对端endpoint, iface=出口网卡(空=自动故障切换)。 */
+    public static GostDto WgSetEgress(Long node_id, String name, String dest, String iface) {
+        JSONObject req = new JSONObject();
+        req.put("name", name);
+        req.put("dest", dest);
+        req.put("iface", iface == null ? "" : iface);
+        return WebSocketServer.send_msg(node_id, req, "WgSetEgress");
+    }
+
+    /** 清除组网的全部出口线路策略。 */
+    public static GostDto WgClearEgress(Long node_id, String name) {
+        JSONObject req = new JSONObject();
+        req.put("name", name);
+        return WebSocketServer.send_msg(node_id, req, "WgClearEgress");
+    }
+
     /** 组网内ICMP延迟探测 */
     public static GostDto PingIps(Long node_id, List<String> ips) {
         JSONObject data = new JSONObject();

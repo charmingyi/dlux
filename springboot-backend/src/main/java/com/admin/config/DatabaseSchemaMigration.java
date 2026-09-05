@@ -25,38 +25,42 @@ public class DatabaseSchemaMigration implements ApplicationRunner {
 
     @Override
     public void run(ApplicationArguments args) {
-        ensureColumn("created_time",
+        ensureColumn(GROUP_LINK_TABLE, "created_time",
                 "ALTER TABLE `group_link` ADD COLUMN `created_time` BIGINT(20) NOT NULL DEFAULT 0 AFTER `inx`");
-        ensureColumn("updated_time",
+        ensureColumn(GROUP_LINK_TABLE, "updated_time",
                 "ALTER TABLE `group_link` ADD COLUMN `updated_time` BIGINT(20) NOT NULL DEFAULT 0 AFTER `created_time`");
+
+        // node_wg.egress: 成员到对端的出口线路网卡(双线主机9929/CN2可选)
+        ensureColumn("node_wg", "egress",
+                "ALTER TABLE `node_wg` ADD COLUMN `egress` VARCHAR(64) NOT NULL DEFAULT '' AFTER `public_key`");
 
         long now = System.currentTimeMillis();
         jdbcTemplate.update("UPDATE `group_link` SET `created_time` = ? WHERE `created_time` = 0", now);
         jdbcTemplate.update("UPDATE `group_link` SET `updated_time` = `created_time` WHERE `updated_time` = 0");
     }
 
-    private void ensureColumn(String columnName, String alterSql) {
-        if (columnExists(columnName)) {
+    private void ensureColumn(String tableName, String columnName, String alterSql) {
+        if (columnExists(tableName, columnName)) {
             return;
         }
 
         try {
             jdbcTemplate.execute(alterSql);
-            log.info("Database migration added {}.{}", GROUP_LINK_TABLE, columnName);
+            log.info("Database migration added {}.{}", tableName, columnName);
         } catch (DataAccessException ex) {
             // Another instance may have completed the same idempotent migration.
-            if (!columnExists(columnName)) {
+            if (!columnExists(tableName, columnName)) {
                 throw ex;
             }
         }
     }
 
-    private boolean columnExists(String columnName) {
+    private boolean columnExists(String tableName, String columnName) {
         Integer count = jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM information_schema.COLUMNS "
                         + "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?",
                 Integer.class,
-                GROUP_LINK_TABLE,
+                tableName,
                 columnName);
         return count != null && count > 0;
     }

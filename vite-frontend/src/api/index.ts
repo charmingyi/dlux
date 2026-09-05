@@ -35,6 +35,9 @@ export const updateWgNetwork = (data: any) => Network.post("/wg/update", data);
 export const deleteWgNetwork = (id: number) => Network.post("/wg/delete", { id });
 export const syncWgNetwork = (id: number) => Network.post("/wg/sync", { id });
 export const getWgNetworkStatus = (id: number) => Network.post("/wg/status", { id });
+export const setWgMemberEgress = (id: number, nodeId: number, egress: string) =>
+  Network.post("/wg/setEgress", { id, nodeId, egress });
+export const getWgEgressIfaces = (nodeId: number) => Network.post("/wg/egressIfaces", { nodeId });
 
 // 线路CRUD
 export const createLink = (data: any) => Network.post("/link/create", data);

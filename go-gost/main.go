@@ -123,6 +123,14 @@ func main() {
 	wsReporter := socket.StartWebSocketReporterWithConfig(config.Addr, config.Secret, config.Http, config.Tls, config.Socks, version)
 	defer wsReporter.Stop()
 	service.SetHTTPReportURL(config.Addr, config.Secret)
+	socket.SetAgentVersion(version)
+
+	// WG 看门狗: 停滞握手自动触发重连, 接口丢失自动重建
+	wgCtx, wgCancel := context.WithCancel(context.Background())
+	defer wgCancel()
+	socket.StartWgWatchdog(wgCtx)
+	// WG 出口线路健康检查与故障切换(9929/CN2等双线场景)
+	socket.StartWgEgressMonitor(wgCtx)
 
 	// 链路延迟探测与上报
 	socket.SetProbeReporter(func(results []socket.ProbeResult) {

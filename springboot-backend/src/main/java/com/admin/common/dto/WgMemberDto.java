@@ -29,6 +29,9 @@ public class WgMemberDto {
     /** 节点公钥 */
     private String publicKey;
 
+    /** 出口线路: 空=不管理, auto=自动故障切换, 其他=指定网卡名 */
+    private String egress;
+
     /** 组网是否已在该节点应用 */
     private Integer applied;
 
