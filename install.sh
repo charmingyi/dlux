@@ -11,7 +11,7 @@
 
 # 仓库与版本 (若自行 fork 请改为自己的仓库)
 REPO_URL="https://github.com/charmingyi/dlux"
-RELEASE_VERSION="1.3.0"
+RELEASE_VERSION="1.3.1"
 
 INSTALL_DIR="/opt/relay"
 BIN_NAME="relay"

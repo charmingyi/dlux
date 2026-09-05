@@ -116,7 +116,9 @@ func StartWgEgressMonitor(ctx context.Context) {
 	})
 }
 
-// listEgressIfaces 枚举带全局IPv4的网卡及其默认网关
+// listEgressIfaces 枚举带全局IPv4的网卡及其网关。
+// 网关来源: 先看 main 表默认路由; 没有的网卡(如挂在策略路由表里的备用线)扫描
+// 全部路由表中 "via X dev Y" 的共识值, 避免写出无网关的黑洞路由。
 func listEgressIfaces() []WgEgressIface {
 	result := map[string]*WgEgressIface{}
 	order := []string{}
@@ -137,16 +139,8 @@ func listEgressIfaces() []WgEgressIface {
 	}
 	if out, err := runCmd("ip", "-4", "route", "show", "default"); err == nil {
 		for _, line := range strings.Split(out, "\n") {
-			f := strings.Fields(line)
-			dev, gw := "", ""
-			for i, part := range f {
-				if part == "dev" && i+1 < len(f) {
-					dev = f[i+1]
-				}
-				if part == "via" && i+1 < len(f) {
-					gw = f[i+1]
-				}
-			}
+			dev := routeValue(line, "dev")
+			gw := routeValue(line, "via")
 			if r, ok := result[dev]; ok {
 				if r.Gateway == "" {
 					r.Gateway = gw
@@ -156,11 +150,55 @@ func listEgressIfaces() []WgEgressIface {
 		}
 	}
 
+	// 备用线不在 main 默认路由里: 从所有路由表收集 "via X dev <iface>" 共识网关
+	gwCount := map[string]map[string]int{}
+	if out, err := runCmd("ip", "-4", "route", "show", "table", "all"); err == nil {
+		for _, line := range strings.Split(out, "\n") {
+			if strings.Contains(line, "table local") || strings.Contains(line, "proto kernel") {
+				continue
+			}
+			dev := routeValue(line, "dev")
+			via := routeValue(line, "via")
+			if dev == "" || via == "" {
+				continue
+			}
+			if _, ok := gwCount[dev]; !ok {
+				gwCount[dev] = map[string]int{}
+			}
+			gwCount[dev][via]++
+		}
+	}
+	for _, r := range result {
+		if r.Gateway != "" {
+			continue
+		}
+		best, bestN := "", 0
+		for gw, n := range gwCount[r.Iface] {
+			if n > bestN {
+				best, bestN = gw, n
+			}
+		}
+		if best != "" {
+			r.Gateway = best
+		}
+	}
+
 	list := make([]WgEgressIface, 0, len(order))
 	for _, name := range order {
 		list = append(list, *result[name])
 	}
 	return list
+}
+
+// routeValue 从一行路由输出里取 "关键字 值" 的值
+func routeValue(line, key string) string {
+	f := strings.Fields(line)
+	for i, part := range f {
+		if part == key && i+1 < len(f) {
+			return f[i+1]
+		}
+	}
+	return ""
 }
 
 // wgResolveIPv4 解析目的地, 只取IPv4(A记录)。纯IP直接返回。
@@ -318,7 +356,9 @@ func wgEgressSwitch(r *wgEgressRule, target *WgEgressIface) {
 	wgEgressSave()
 }
 
-// wgEgressEnsureRule 幂等下发 rule + table
+// wgEgressEnsureRule 幂等下发 rule + table。
+// 网关未知的网卡绝不写 "default dev X"(对非直连目的地等于黑洞), 此时清空该表
+// 让流量落到后续规则/主表, 保持与系统路由一致的安全兜底。
 func wgEgressEnsureRule(r *wgEgressRule) {
 	if r.Resolved == "" {
 		return
@@ -343,17 +383,18 @@ func wgEgressEnsureRule(r *wgEgressRule) {
 			gw = f.Gateway
 		}
 	}
-	if gw != "" {
-		_, err := runCmd("ip", "route", "replace", "default", "via", gw, "dev", iface, "table", fmt.Sprint(r.Table))
-		if err != nil {
-			fmt.Printf("[wg-egress] 写table默认路由失败: %v\n", err)
-			return
-		}
-	} else {
-		if _, err := runCmd("ip", "route", "replace", "default", "dev", iface, "table", fmt.Sprint(r.Table)); err != nil {
-			fmt.Printf("[wg-egress] 写table默认路由失败: %v\n", err)
-			return
-		}
+	if gw == "" {
+		fmt.Printf("[wg-egress] %s 网卡 %s 未找到网关, 不写table路由, 流量沿用系统路由\n", r.Name, iface)
+		_, _ = runCmd("ip", "route", "flush", "table", fmt.Sprint(r.Table))
+		return
+	}
+	routeDesc := "via " + gw + " dev " + iface
+	// 路由已在位时跳过重写, 避免30秒巡检反复替换; 被外部清掉时自动恢复
+	if out, err := runCmd("ip", "route", "show", "table", fmt.Sprint(r.Table)); err == nil && strings.Contains(out, routeDesc) {
+		return
+	}
+	if _, err := runCmd("ip", "route", "replace", "default", "via", gw, "dev", iface, "table", fmt.Sprint(r.Table)); err != nil {
+		fmt.Printf("[wg-egress] 写table默认路由失败: %v\n", err)
 	}
 }
 
