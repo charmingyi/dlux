@@ -185,6 +185,9 @@ func wgWatchdogOnceMore() {
 					fmt.Printf("[wg-watchdog] %s peer %.8s… 握手停滞 %s, 探测 %s 触发重新握手\n", iface, peer.PublicKey, stale.Truncate(time.Second), wgIP)
 					PingIps(&PingIpsRequest{Ips: []string{wgIP}})
 				}
+				// 握手停滞时同时踢一次 peer 的路由缓存: 若出口线路刚切换过,
+				// 内核 dst cache 会让数据流仍走旧线路, 不踢的话隧道不会恢复。
+				kickPeerEndpoints(entry.name)
 			}
 		}()
 	}

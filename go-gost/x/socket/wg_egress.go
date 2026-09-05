@@ -302,11 +302,12 @@ func findIface(ifaces []WgEgressIface, name string) *WgEgressIface {
 func wgEgressApplyRule(r *wgEgressRule, ifaces []WgEgressIface) {
 	active := findIface(ifaces, r.Active)
 	if active == nil {
-		// 当前线路配置消失了(网卡删除等), 重新选择
+		// 当前线路配置消失了(网卡/IP变化等), 重新选择
 		cands := wgEgressCandidates(r, ifaces)
 		if len(cands) == 0 {
 			return
 		}
+		fmt.Printf("[wg-egress] %s 当前出口 %s 不在可用网卡列表, 重新选择为 %s\n", r.Name, r.Active, cands[0].Iface)
 		wgEgressSwitch(r, &cands[0])
 		return
 	}
@@ -348,11 +349,39 @@ func wgEgressApplyRule(r *wgEgressRule, ifaces []WgEgressIface) {
 	fmt.Printf("[wg-egress] %s 所有出口均不可达目的地, 维持 %s\n", r.Name, active.Iface)
 }
 
+// kickPeerEndpoints 强制 WG peer 重新做路由查找。
+// WireGuard 内核为每个 peer 缓存目的路由(dst cache), 只改 ip rule/路由表
+// 不会让已建立的 WG UDP 流换线——实测切换线路后隧道仍走旧死路。重设
+// endpoint 会清掉该缓存, 下一次发送立即按新路由表出网。endpoint 值不变,
+// 对端与流量均无感。
+func kickPeerEndpoints(name string) {
+	iface := ifaceName(name)
+	dump, err := runCmd("wg", "show", iface, "dump")
+	if err != nil {
+		return // 接口不存在等, 忽略
+	}
+	lines := strings.Split(strings.TrimSpace(dump), "\n")
+	for _, line := range lines[1:] {
+		fields := strings.Split(line, "\t")
+		if len(fields) < 4 {
+			continue
+		}
+		ep := fields[2]
+		if ep == "" || ep == "(none)" {
+			continue // hub侧动态学习端点, 无固定路由可踢
+		}
+		if _, err := runCmd("wg", "set", iface, "peer", fields[0], "endpoint", ep); err != nil {
+			fmt.Printf("[wg-egress] %s 重设peer %.8s… endpoint失败: %v\n", iface, fields[0], err)
+		}
+	}
+}
+
 // wgEgressSwitch 切换出口并立即生效
 func wgEgressSwitch(r *wgEgressRule, target *WgEgressIface) {
 	r.Active = target.Iface
 	r.FailCount = 0
 	wgEgressEnsureRule(r)
+	kickPeerEndpoints(r.Name)
 	wgEgressSave()
 }
 
