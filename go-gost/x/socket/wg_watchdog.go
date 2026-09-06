@@ -140,6 +140,9 @@ func wgWatchdogOnceMore() {
 				}
 			}
 
+			// WSS 封装的网段: 检查 wstunnel 长连接老化(MSS被钳制/重传堆积)并自愈
+			checkWssConnectionQuality(entry.name, now)
+
 			for _, peer := range status.Peers {
 				if peer.LatestHandshake <= 0 {
 					continue // 尚未配置完成或从未连通, 交由正常握手流程
@@ -185,9 +188,6 @@ func wgWatchdogOnceMore() {
 					fmt.Printf("[wg-watchdog] %s peer %.8s… 握手停滞 %s, 探测 %s 触发重新握手\n", iface, peer.PublicKey, stale.Truncate(time.Second), wgIP)
 					PingIps(&PingIpsRequest{Ips: []string{wgIP}})
 				}
-				// 握手停滞时同时踢一次 peer 的路由缓存: 若出口线路刚切换过,
-				// 内核 dst cache 会让数据流仍走旧线路, 不踢的话隧道不会恢复。
-				kickPeerEndpoints(entry.name)
 			}
 		}()
 	}

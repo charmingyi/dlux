@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
+	"time"
 )
 
 // WSS 封装管理: 运营商对长UDP流做持续限速(实测令牌桶突发200M后压到9-20M),
@@ -111,4 +113,131 @@ WantedBy=multi-user.target
 		return nil, fmt.Errorf("启动服务失败: %v", err)
 	}
 	return &WssEnsureResponse{OK: true, Binary: wssBinPath, Detail: "installed: " + unit}, nil
+}
+
+// ==================== WSS 长连接老化自愈 ====================
+// 实测案例: wstunnel 的长TCP连接运行数小时后 MSS 被路径钳制到 709(正常1370)、
+// 重传率 ~13%, 隧道内一切 TCP 流量延迟/吞吐劣化, 而 ICMP 完全正常。
+// 看门狗每分钟检查封装TCP的 MSS 与重传率, 退化连续 2 次即重连(全新TCP恢复)。
+
+var (
+	wssQualityMu   sync.Mutex
+	wssQuality     = map[string]*wssQualityTracker{}
+)
+
+type wssQualityTracker struct {
+	prevRetrans uint64
+	prevSent    uint64
+	prevSeen    time.Time
+	lastMss     int
+	badTicks    int
+	lastBounce  time.Time
+}
+
+const (
+	wssDegradedRetransRate = 0.10            // 重传率超过10%视为劣化
+	wssDegradedMss         = 1000            // MSS被钳制到1000以下视为劣化
+	wssBounceCooldown      = 10 * time.Minute // 重连冷却, 防抖
+	wssBadTicksToAct       = 2               // 连续2次劣化才动作
+)
+
+// extractIntFrom 从字符串中提取 key: 之后的整数值
+func extractIntFrom(s, key string) int {
+	idx := strings.Index(s, key)
+	if idx < 0 {
+		return 0
+	}
+	rest := s[idx+len(key):]
+	num := ""
+	for _, c := range rest {
+		if c >= '0' && c <= '9' {
+			num += string(c)
+		} else if num != "" {
+			break
+		}
+	}
+	if num == "" {
+		return 0
+	}
+	n := 0
+	fmt.Sscanf(num, "%d", &n)
+	return n
+}
+
+// checkWssConnectionQuality 检查 WSS 封装的长连接质量, 老化则自动重连。
+// 由看门狗每分钟调用(持有wgMu)。
+func checkWssConnectionQuality(name string, now time.Time) {
+	unit := "wstunnel-net" + name
+	out, err := runCmd("systemctl", "is-active", unit)
+	if err != nil || strings.TrimSpace(out) != "active" {
+		return // 没有 WSS 封装的组网直接跳过
+	}
+	pid := strings.TrimSpace(mustCmd("systemctl", "show", "-p", "MainPID", "--value", unit))
+	if pid == "" || pid == "0" {
+		return
+	}
+	connOut, err := runCmd("bash", "-c", fmt.Sprintf("ss -tni | grep -A1 'pid=%s' | head -2", pid))
+	if err != nil || !strings.Contains(connOut, "mss:") {
+		return // 没有 Established 连接(尚未有流量)
+	}
+
+	mss := extractIntFrom(connOut, "mss:")
+	retrans := uint64(extractIntFrom(connOut, "bytes_retrans:"))
+	sent := uint64(extractIntFrom(connOut, "bytes_sent:"))
+
+	wssQualityMu.Lock()
+	defer wssQualityMu.Unlock()
+	t := wssQuality[name]
+	if t == nil {
+		t = &wssQualityTracker{}
+		wssQuality[name] = t
+	}
+	defer func() {
+		t.prevRetrans = retrans
+		t.prevSent = sent
+		t.prevSeen = now
+	}()
+
+	// 连接已更换(重连/重启后计数归零): 重置基线
+	if t.prevSeen.IsZero() || retrans < t.prevRetrans || sent < t.prevSent {
+		t.badTicks = 0
+		return
+	}
+	if now.Sub(t.lastBounce) < wssBounceCooldown {
+		return // 冷却期
+	}
+
+	degraded := false
+	reason := ""
+	if mss > 0 && mss < wssDegradedMss {
+		degraded = true
+		reason = fmt.Sprintf("MSS被钳制(%d)", mss)
+	} else if sentDelta := sent - t.prevSent; sentDelta > 4_000_000 {
+		if rate := float64(retrans-t.prevRetrans) / float64(sentDelta); rate > wssDegradedRetransRate {
+			degraded = true
+			reason = fmt.Sprintf("重传率%.0f%%", rate*100)
+		}
+	}
+	t.lastMss = mss
+	if !degraded {
+		t.badTicks = 0
+		return
+	}
+	t.badTicks++
+	if t.badTicks < wssBadTicksToAct {
+		return
+	}
+	t.badTicks = 0
+	t.lastBounce = now
+	fmt.Printf("[wg-watchdog] %s wstunnel 长连接老化(%s), 自动重连恢复\n", name, reason)
+	_, _ = runCmd("systemctl", "restart", unit)
+}
+
+// mustCmd 同 runCmd 但忽略错误仅返回输出
+func mustCmd(name string, args ...string) string {
+	out, err := runCmd(name, args...)
+	if err != nil {
+		return ""
+	}
+	return out
 }
