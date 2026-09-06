@@ -481,6 +481,12 @@ public class WgNetworkServiceImpl extends ServiceImpl<WgNetworkMapper, WgNetwork
             } catch (Exception e) {
                 log.warn("WSS client 下发失败 node={}: {}", node.getId(), e.getMessage());
             }
+            // WSS 模式下出口钉定不再需要(外层走TCP, 跟随默认路由), 清掉历史规则
+            try {
+                GostUtil.WgClearEgress(node.getId(), network.getId().toString());
+            } catch (Exception e) {
+                log.warn("清理出口规则失败 node={}: {}", node.getId(), e.getMessage());
+            }
         }
     }
 
