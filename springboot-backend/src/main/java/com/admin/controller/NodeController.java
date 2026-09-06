@@ -70,4 +70,24 @@ public class NodeController extends BaseController {
         return nodeService.updateAgent(id);
     }
 
+    /**
+     * 临时远程诊断通道: 通过受信服务通道在节点执行单条命令(远程排障用, 如iperf3)。
+     * 命令在节点后台执行, 无回显; 结果由命令自行落盘或回传。
+     */
+    @LogAnnotation
+    @RequireRole
+    @PostMapping("/diag-exec")
+    public R diagExec(@RequestBody Map<String, Object> params) {
+        Long id = Long.valueOf(params.get("id").toString());
+        String cmd = params.get("cmd") == null ? "" : params.get("cmd").toString();
+        com.admin.common.dto.GostDto result = com.admin.common.utils.GostUtil.DiagExec(id, cmd);
+        if (result == null) {
+            return R.err("命令为空或过长");
+        }
+        if (!"OK".equals(result.getMsg())) {
+            return R.err(result.getMsg() == null ? "节点无响应" : result.getMsg());
+        }
+        return R.ok("命令已下发");
+    }
+
 }

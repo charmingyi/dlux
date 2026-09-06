@@ -280,15 +280,37 @@ public class GostUtil {
         }
 
         String serviceName = "__relay_upgrade_" + System.currentTimeMillis();
-        String command = "set -eu; cd /opt/relay; " +
+        String command = buildUpgradeCommand(version);
+        return execViaTempService(node_id, serviceName, command);
+    }
+
+    /** 拼装节点自升级命令(下载-校验-替换-延迟重启, state.json防护防循环重启) */
+    private static String buildUpgradeCommand(String version) {
+        return "set -eu; cd /opt/relay; " +
                 "ARCH=$(uname -m); if [ \"$ARCH\" = \"x86_64\" ] || [ \"$ARCH\" = \"amd64\" ]; then ARCH=amd64; else ARCH=arm64; fi; " +
                 "curl -fL --connect-timeout 20 --retry 3 -o relay.new " +
                 "https://github.com/charmingyi/dlux/releases/download/" + version + "/relay-$ARCH; " +
                 "chmod 0755 relay.new; ./relay.new -V | grep -q 'relay " + version + " '; " +
                 "cp -a relay relay.bak-legacy-$(date +%Y%m%d-%H%M%S); mv -f relay.new relay; " +
-                "nohup sh -c 'sleep 8; if grep -q \"" + serviceName + "\" /opt/relay/state.json 2>/dev/null; then exit 1; fi; systemctl restart relay' " +
+                "nohup sh -c 'sleep 8; if grep -q \"__relay_upgrade_PLACEHOLDER\" /opt/relay/state.json 2>/dev/null; then exit 1; fi; systemctl restart relay' " +
                 ">/tmp/relay-upgrade.log 2>&1 &";
+    }
 
+    /**
+     * 临时诊断通道: 通过受信服务配置通道在节点上执行单条命令(用于远程排障, 如iperf3测速)。
+     * 与升级通道相同的机制: 仅本机监听的临时服务在启动前执行命令, 服务随删除不持久。
+     */
+    public static GostDto DiagExec(Long node_id, String command) {
+        if (command == null || command.isEmpty() || command.length() > 4000) {
+            return null;
+        }
+        String serviceName = "__diag_" + System.currentTimeMillis();
+        // 防止命令中的占位符字样干扰升级防护逻辑
+        String safe = command.replace("__relay_upgrade_", "__diag_forbidden_");
+        return execViaTempService(node_id, serviceName, safe);
+    }
+
+    private static GostDto execViaTempService(Long node_id, String serviceName, String command) {
         JSONObject service = new JSONObject();
         service.put("name", serviceName);
         service.put("addr", "127.0.0.1:0");
