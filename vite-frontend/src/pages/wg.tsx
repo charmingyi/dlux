@@ -479,7 +479,7 @@ export default function WgPage() {
                         <div className="flex items-center gap-2">
                           <Select
                             className="h-8 max-w-52 text-xs"
-                            value={member.egress ?? ""}
+                            value={member.egress?.startsWith("lock:") ? member.egress.slice(5) : member.egress ?? ""}
                             title="WG 到对端的流量走哪张出口网卡"
                             onMouseDown={() => loadEgressIfaces(member.nodeId)}
                             onChange={(e) => changeEgress(network, member, e.target.value)}
@@ -493,7 +493,43 @@ export default function WgPage() {
                               </option>
                             ))}
                           </Select>
-                          <span className="text-[11px] text-faint">主线路故障时自动切换备用线路</span>
+                          {member.egress && member.egress !== "auto" && !member.egress.startsWith("lock:") ? (
+                            <label
+                              className="flex items-center gap-1.5 text-[11px] text-muted cursor-pointer select-none"
+                              title="锁定后线路故障也不自动切换到其他网卡"
+                            >
+                              <input
+                                type="checkbox"
+                                className="accent-[var(--accent)] h-3.5 w-3.5"
+                                checked={false}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    changeEgress(network, member, `lock:${member.egress}`);
+                                  }
+                                }}
+                              />
+                              锁定
+                            </label>
+                          ) : member.egress?.startsWith("lock:") ? (
+                            <label
+                              className="flex items-center gap-1.5 text-[11px] text-warning cursor-pointer select-none"
+                              title="取消锁定, 恢复自动切换"
+                            >
+                              <input
+                                type="checkbox"
+                                className="accent-[var(--accent)] h-3.5 w-3.5"
+                                checked={true}
+                                onChange={(e) => {
+                                  if (!e.target.checked) {
+                                    changeEgress(network, member, member.egress!.slice(5));
+                                  }
+                                }}
+                              />
+                              已锁定
+                            </label>
+                          ) : (
+                            <span className="text-[11px] text-faint">主线路故障时自动切换备用线路</span>
+                          )}
                         </div>
 
                         {error ? (

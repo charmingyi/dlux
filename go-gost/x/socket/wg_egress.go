@@ -47,6 +47,7 @@ type WgSetEgressRequest struct {
 	Name  string `json:"name"`  // 组网名
 	Dest  string `json:"dest"`  // 对端endpoint主机或IP
 	Iface string `json:"iface"` // 指定出口网卡; 空=自动(健康检查+故障切换)
+	Lock  bool   `json:"lock"`  // 锁定到指定网卡: 线路故障也不自动切换
 }
 
 type WgClearEgressRequest struct {
@@ -59,6 +60,7 @@ type wgEgressRule struct {
 	Dest        string `json:"dest"`               // 目的地(可能是域名)
 	Resolved    string `json:"resolved,omitempty"` // 解析出的IPv4
 	Iface       string `json:"iface,omitempty"`    // 用户指定网卡, 空=自动
+	Lock        bool   `json:"lock,omitempty"`     // 锁定: 无论线路健康与否都不自动切换
 	Active      string `json:"active,omitempty"`   // 当前实际使用的网卡
 	Table       int    `json:"table"`
 	Priority    int    `json:"priority"`
@@ -391,6 +393,17 @@ func wgEgressApplyRule(r *wgEgressRule, ifaces []WgEgressIface) {
 	}
 	r.FailBack = 0
 	r.FailCount++
+	// 锁定模式: 用户明确要求固定在该线路上, 线路故障也不自动切换。
+	// 仍保留规则/路由在位与看门狗踢缓存, 线路恢复后隧道自动续上。
+	if r.Lock {
+		if r.FailCount == wgEgressFailSwitch {
+			fmt.Printf("[wg-egress] %s 线路 %s 不健康(探测=%s), 已锁定于该线路, 不自动切换, 等待线路恢复\n",
+				r.Name, active.Iface, tcpModeName(r))
+		}
+		r.FailCount = 0
+		wgEgressEnsureRule(r)
+		return
+	}
 	// ICMP模式且目的端从未探测通过(可能禁ICMP): 不参与切换判断, 只保证规则在位
 	if !r.EverOk && r.TcpPort == 0 {
 		wgEgressEnsureRule(r)
@@ -526,6 +539,7 @@ func wgEgressSet(req *WgSetEgressRequest) error {
 		wgEgressCurr.Rules = append(wgEgressCurr.Rules, rule)
 	}
 	rule.Iface = req.Iface
+	rule.Lock = req.Lock
 	rule.LastResolve = 0
 	rule.LastTcpTry = 0 // 新线路上立即尝试TCP探测发现
 	if ip := wgResolveIPv4(req.Dest); ip != "" {

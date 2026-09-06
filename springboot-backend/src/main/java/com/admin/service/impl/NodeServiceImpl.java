@@ -37,7 +37,7 @@ import java.util.Objects;
 @Service
 public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements NodeService {
 
-    private static final String CURRENT_AGENT_VERSION = "1.3.3";
+    private static final String CURRENT_AGENT_VERSION = "1.3.4";
 
     private static final String SUCCESS_CREATE_MSG = "节点创建成功";
     private static final String SUCCESS_UPDATE_MSG = "节点更新成功";

@@ -236,12 +236,13 @@ public class GostUtil {
         return WebSocketServer.send_msg(node_id, new JSONObject(), "WgListEgress");
     }
 
-    /** 设置组网对端出口线路: dest=对端endpoint, iface=出口网卡(空=自动故障切换)。 */
-    public static GostDto WgSetEgress(Long node_id, String name, String dest, String iface) {
+    /** 设置组网对端出口线路: dest=对端endpoint, iface=出口网卡(空=自动故障切换), lock=锁定不自动切换。 */
+    public static GostDto WgSetEgress(Long node_id, String name, String dest, String iface, boolean lock) {
         JSONObject req = new JSONObject();
         req.put("name", name);
         req.put("dest", dest);
         req.put("iface", iface == null ? "" : iface);
+        req.put("lock", lock);
         return WebSocketServer.send_msg(node_id, req, "WgSetEgress");
     }
 

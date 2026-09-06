@@ -417,7 +417,7 @@ public class WgNetworkServiceImpl extends ServiceImpl<WgNetworkMapper, WgNetwork
 
     /**
      * 设置某个成员到对端的出口线路, 并立即在该节点生效。
-     * egress: ""=清除策略(跟随系统路由); "auto"=自动故障切换; 其他=指定出口网卡名。
+     * egress: ""=清除策略(跟随系统路由); "auto"=自动故障切换; "lock:ethX"=锁定ethX不自动切换; 其他=指定出口网卡名(带自动切换)。
      */
     @Override
     public R setMemberEgress(Long networkId, Integer nodeId, String egress) {
@@ -453,11 +453,11 @@ public class WgNetworkServiceImpl extends ServiceImpl<WgNetworkMapper, WgNetwork
         if (dests.isEmpty()) {
             return R.err("该成员没有固定的对端端点(中心节点由分支漫游接入), 无需设置出口");
         }
-        String iface = "auto".equals(member.getEgress()) ? "" : member.getEgress();
+        String[] ifaceLock = parseEgress(member.getEgress());
         List<String> failed = new ArrayList<>();
         for (String dest : dests) {
             try {
-                GostDto result = GostUtil.WgSetEgress(node.getId(), name, dest, iface);
+                GostDto result = GostUtil.WgSetEgress(node.getId(), name, dest, ifaceLock[0], Boolean.parseBoolean(ifaceLock[1]));
                 if (!isGostOperationSuccess(result)) {
                     failed.add(dest + ": " + (result == null ? "节点无响应" : result.getMsg()));
                 }
@@ -468,7 +468,25 @@ public class WgNetworkServiceImpl extends ServiceImpl<WgNetworkMapper, WgNetwork
         if (!failed.isEmpty()) {
             return R.err("出口策略下发失败: " + String.join("; ", failed));
         }
-        return R.ok("出口线路已生效" + (iface.isEmpty() ? "(自动故障切换)" : ": " + iface));
+        if (Boolean.parseBoolean(ifaceLock[1])) {
+            return R.ok("已锁定出口线路: " + ifaceLock[0] + "(线路故障也不自动切换)");
+        }
+        return R.ok("出口线路已生效" + (ifaceLock[0].isEmpty() ? "(自动故障切换)" : ": " + ifaceLock[0]));
+    }
+
+    /**
+     * 解析 node_wg.egress 存储值 → {iface, lock}。
+     * ""=未管理; "auto"=自动; "lock:ethX"=锁定; "ethX"=指定网卡。
+     */
+    private String[] parseEgress(String egress) {
+        String value = egress == null ? "" : egress.trim();
+        if (value.startsWith("lock:")) {
+            return new String[]{value.substring(5), "true"};
+        }
+        if ("auto".equals(value)) {
+            return new String[]{"", "false"};
+        }
+        return new String[]{value, "false"};
     }
 
     /** 查询节点的候选出口网卡(供前端下拉选择) */
@@ -501,12 +519,14 @@ public class WgNetworkServiceImpl extends ServiceImpl<WgNetworkMapper, WgNetwork
 
             List<String> dests = memberEgressDests(network, members, member);
             if (dests.isEmpty()) continue;
-            String iface = "auto".equals(member.getEgress()) ? "" : member.getEgress();
+            String[] ifaceLock = parseEgress(member.getEgress());
+            String iface = ifaceLock[0];
+            boolean lock = Boolean.parseBoolean(ifaceLock[1]);
             for (String dest : dests) {
                 try {
-                    GostDto result = GostUtil.WgSetEgress(node.getId(), network.getId().toString(), dest, iface);
+                    GostDto result = GostUtil.WgSetEgress(node.getId(), network.getId().toString(), dest, iface, lock);
                     if (!isGostOperationSuccess(result)) {
-                        String message = isUnknownCommand(result) ? "节点版本过旧, 请升级到1.3.0"
+                        String message = isUnknownCommand(result) ? "节点版本过旧, 请升级到1.3.4"
                                 : (result == null ? "节点无响应" : result.getMsg());
                         log.warn("下发出口线路失败 node={} dest={}: {}", node.getId(), dest, message);
                     }
