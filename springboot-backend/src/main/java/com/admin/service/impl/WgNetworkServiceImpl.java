@@ -304,12 +304,12 @@ public class WgNetworkServiceImpl extends ServiceImpl<WgNetworkMapper, WgNetwork
         }
 
 		// 阶段2.5: 按传输封装下发。
-		//  - wss: 确保各节点的 wstunnel 服务(中心=server, 分支=client)就绪。
-		//  - udp: 按成员配置下发出口线路策略(双线主机9929/CN2等)。旧版Agent不支持时忽略。
+		//  - wss: 确保各节点的 wstunnel 服务(中心=server, 分支=client)就绪,
+		//    并且仍然下发出口钉定(钉的是封装TCP的外层路由, 防止被宿主遗留策略路由拉回病线)。
+		//  - udp: 按成员配置下发出口线路策略。旧版Agent不支持时忽略。
+		applyEgressPolicies(network, members);
 		if ("wss".equals(network.getTransport())) {
 			applyWss(network, members, applied);
-		} else {
-			applyEgressPolicies(network, members);
 		}
 
 		// WireGuard 在首次下发 peer、切换端点或穿过 NAT 时需要短暂完成握手。
@@ -481,12 +481,6 @@ public class WgNetworkServiceImpl extends ServiceImpl<WgNetworkMapper, WgNetwork
             } catch (Exception e) {
                 log.warn("WSS client 下发失败 node={}: {}", node.getId(), e.getMessage());
             }
-            // WSS 模式下出口钉定不再需要(外层走TCP, 跟随默认路由), 清掉历史规则
-            try {
-                GostUtil.WgClearEgress(node.getId(), network.getId().toString());
-            } catch (Exception e) {
-                log.warn("清理出口规则失败 node={}: {}", node.getId(), e.getMessage());
-            }
         }
     }
 
@@ -601,7 +595,7 @@ public class WgNetworkServiceImpl extends ServiceImpl<WgNetworkMapper, WgNetwork
                 try {
                     GostDto result = GostUtil.WgSetEgress(node.getId(), network.getId().toString(), dest, iface, lock);
                     if (!isGostOperationSuccess(result)) {
-                        String message = isUnknownCommand(result) ? "节点版本过旧, 请升级到1.3.4"
+                        String message = isUnknownCommand(result) ? "节点版本过旧, 请升级到1.4.0"
                                 : (result == null ? "节点无响应" : result.getMsg());
                         log.warn("下发出口线路失败 node={} dest={}: {}", node.getId(), dest, message);
                     }
