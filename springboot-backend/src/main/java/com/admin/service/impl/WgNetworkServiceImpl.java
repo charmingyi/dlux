@@ -84,7 +84,10 @@ public class WgNetworkServiceImpl extends ServiceImpl<WgNetworkMapper, WgNetwork
             }
             dto.setListenPort(port);
         }
-
+        // 传输封装: 新组网默认 WSS over TCP(防运营商UDP限速)
+        if (dto.getTransport() == null || dto.getTransport().trim().isEmpty()) {
+            dto.setTransport("wss");
+        }
         R validateResult = validateBase(dto);
         if (validateResult.getCode() != 0) {
             return validateResult;
@@ -142,6 +145,12 @@ public class WgNetworkServiceImpl extends ServiceImpl<WgNetworkMapper, WgNetwork
         if (dto.getMode() != null) network.setMode(dto.getMode());
         if (dto.getListenPort() != null) network.setListenPort(dto.getListenPort());
         if (dto.getMtu() != null) network.setMtu(dto.getMtu());
+        if (dto.getTransport() != null) network.setTransport(dto.getTransport());
+
+        // WSS 仅支持 Hub 拓扑(分支只连中心, 全部流量走TCP)
+        if ("wss".equals(network.getTransport()) && !"hub".equals(network.getMode())) {
+            return R.err("WSS 封装当前仅支持 Hub 拓扑");
+        }
 
         R validateResult = validateBase(fromEntity(network));
         if (validateResult.getCode() != 0) {
@@ -294,8 +303,14 @@ public class WgNetworkServiceImpl extends ServiceImpl<WgNetworkMapper, WgNetwork
 			}
         }
 
-		// 阶段2.5: 按成员配置下发出口线路策略(双线主机9929/CN2等)。旧版Agent不支持时忽略。
-		applyEgressPolicies(network, members);
+		// 阶段2.5: 按传输封装下发。
+		//  - wss: 确保各节点的 wstunnel 服务(中心=server, 分支=client)就绪。
+		//  - udp: 按成员配置下发出口线路策略(双线主机9929/CN2等)。旧版Agent不支持时忽略。
+		if ("wss".equals(network.getTransport())) {
+			applyWss(network, members, applied);
+		} else {
+			applyEgressPolicies(network, members);
+		}
 
 		// WireGuard 在首次下发 peer、切换端点或穿过 NAT 时需要短暂完成握手。
 		// 立即 ICMP 会把“尚未握手”缓存成不可达，导致页面长期显示假阴性。
@@ -413,6 +428,60 @@ public class WgNetworkServiceImpl extends ServiceImpl<WgNetworkMapper, WgNetwork
         status.put("members", runtimeMembers);
         status.put("timestamp", System.currentTimeMillis());
         return R.ok(status);
+    }
+
+    /**
+     * WSS 模式: 确保每个在线成员的 wstunnel 服务就绪。
+     * 中心节点: wstunnel server 监听 27000+networkId, 注入到本机 WG 端口。
+     * 分支节点: wstunnel client 把本机 WG 外层包经 ws://中心:port 送到中心。
+     * 幂等: 单元不变时不重启, 只保证在跑。
+     */
+    private void applyWss(WgNetwork network, List<NodeWg> members, List<Integer> applied) {
+        int wssPort = 27000 + network.getId().intValue();
+        String unitSuffix = "net" + network.getId();
+        int wgPort = network.getListenPort() == null ? 51820 : network.getListenPort();
+
+        NodeWg hub = members.stream()
+                .filter(m -> m.getHub() != null && m.getHub() == 1)
+                .findFirst().orElse(null);
+        if (hub == null) {
+            log.warn("WSS 模式缺少中心节点 network={}", network.getId());
+            return;
+        }
+        Node hubNode = nodeService.getById(hub.getNodeId());
+        if (hubNode == null || hubNode.getServerIp() == null || hubNode.getServerIp().isBlank()) {
+            log.warn("WSS 模式中心节点缺少公网地址 network={}", network.getId());
+            return;
+        }
+        String remoteUrl = "ws://" + hubNode.getServerIp() + ":" + wssPort;
+
+        // 中心: server
+        try {
+            GostDto result = GostUtil.WssEnsure(hubNode.getId(), unitSuffix, "server", wssPort, 0, 0, "");
+            if (!isGostOperationSuccess(result)) {
+                log.warn("WSS server 下发失败 hub={}: {}", hubNode.getId(),
+                        isUnknownCommand(result) ? "节点版本过旧, 请升级到1.4.0" : (result == null ? "节点无响应" : result.getMsg()));
+            }
+        } catch (Exception e) {
+            log.warn("WSS server 下发失败 hub={}: {}", hubNode.getId(), e.getMessage());
+        }
+
+        // 分支: client
+        for (NodeWg member : members) {
+            if (Objects.equals(member.getNodeId(), hub.getNodeId())) continue;
+            Node node = nodeService.getById(member.getNodeId());
+            if (node == null || node.getStatus() == null || node.getStatus() != 1) continue;
+            if (!applied.contains(member.getNodeId())) continue; // 本轮未成功下发配置的节点跳过
+            try {
+                GostDto result = GostUtil.WssEnsure(node.getId(), unitSuffix, "client", 0, wgPort, wgPort, remoteUrl);
+                if (!isGostOperationSuccess(result)) {
+                    log.warn("WSS client 下发失败 node={}: {}", node.getId(),
+                            isUnknownCommand(result) ? "节点版本过旧, 请升级到1.4.0" : (result == null ? "节点无响应" : result.getMsg()));
+                }
+            } catch (Exception e) {
+                log.warn("WSS client 下发失败 node={}: {}", node.getId(), e.getMessage());
+            }
+        }
     }
 
     /**
@@ -622,6 +691,12 @@ public class WgNetworkServiceImpl extends ServiceImpl<WgNetworkMapper, WgNetwork
 		}
         if (dto.getMode() != null && !"mesh".equals(dto.getMode()) && !"hub".equals(dto.getMode())) {
             return R.err("mode 仅支持 mesh 或 hub");
+        }
+        if (dto.getTransport() != null && !"udp".equals(dto.getTransport()) && !"wss".equals(dto.getTransport())) {
+            return R.err("transport 仅支持 udp 或 wss");
+        }
+        if ("wss".equals(dto.getTransport()) && dto.getMode() != null && !"hub".equals(dto.getMode())) {
+            return R.err("WSS 封装当前仅支持 Hub 拓扑(分支只连中心, 流量全走TCP)");
         }
         return R.ok();
     }
@@ -925,8 +1000,10 @@ public class WgNetworkServiceImpl extends ServiceImpl<WgNetworkMapper, WgNetwork
                 if (hub != null && hub.getPublicKey() != null) {
                     Node hubNode = nodeService.getById(hub.getNodeId());
                     if (hubNode != null) {
+                        // WSS 模式: 分支的 WG 外层包发给本机 wstunnel 客户端, 经TCP送到中心
+                        String epHost = "wss".equals(network.getTransport()) ? "127.0.0.1" : hubNode.getServerIp();
                         JSONObject peer = buildPeer(hub.getPublicKey(),
-								formatEndpoint(hubNode.getServerIp(), network.getListenPort()),
+								formatEndpoint(epHost, network.getListenPort()),
 								java.util.Collections.singletonList(network.getSubnet()),
 								hub.getIp());
                         peers.add(peer);

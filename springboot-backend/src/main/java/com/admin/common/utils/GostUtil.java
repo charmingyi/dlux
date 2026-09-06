@@ -253,6 +253,18 @@ public class GostUtil {
         return WebSocketServer.send_msg(node_id, req, "WgClearEgress");
     }
 
+    /** 确保节点上的 wstunnel 服务就绪(WSS封装, 幂等)。 */
+    public static GostDto WssEnsure(Long node_id, String unitSuffix, String role, int port, int localUdp, int targetUdp, String remoteUrl) {
+        JSONObject req = new JSONObject();
+        req.put("unitName", unitSuffix);
+        req.put("role", role);
+        req.put("port", port);
+        req.put("localUdp", localUdp);
+        req.put("targetUdp", targetUdp);
+        req.put("remoteUrl", remoteUrl == null ? "" : remoteUrl);
+        return WebSocketServer.send_msg(node_id, req, "WssEnsure");
+    }
+
     /** 组网内ICMP延迟探测 */
     public static GostDto PingIps(Long node_id, List<String> ips) {
         JSONObject data = new JSONObject();

@@ -609,6 +609,13 @@ func (w *WebSocketReporter) routeCommand(cmd CommandMessage) {
 		err = w.handleWgClearEgress(cmd.Data)
 		response.Type = "WgClearEgressResponse"
 
+	// WSS 封装管理(WG over WebSocket/TCP, 防运营商UDP限速)
+	case "WssEnsure":
+		var wssResult *WssEnsureResponse
+		wssResult, err = w.handleWssEnsure(cmd.Data)
+		response.Type = "WssEnsureResponse"
+		response.Data = wssResult
+
 	// 节点在线自更新
 	case "UpdateAgent":
 		err = w.handleUpdateAgent(cmd.Data)
@@ -1334,6 +1341,19 @@ func (w *WebSocketReporter) handleWgClearEgress(data interface{}) error {
 	}
 	wgEgressClear(req.Name)
 	return nil
+}
+
+// handleWssEnsure 确保节点上的 wstunnel 服务就绪(幂等)
+func (w *WebSocketReporter) handleWssEnsure(data interface{}) (*WssEnsureResponse, error) {
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("序列化WSS请求失败: %v", err)
+	}
+	var req WssEnsureRequest
+	if err := json.Unmarshal(jsonData, &req); err != nil {
+		return nil, fmt.Errorf("解析WSS请求失败: %v", err)
+	}
+	return wssEnsure(&req)
 }
 
 // SendProbes 发送探测结果给面板

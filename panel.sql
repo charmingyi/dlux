@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS `wg_network` (
   `mode` varchar(20) NOT NULL DEFAULT 'mesh' COMMENT 'mesh=全互联, hub=中心-分支',
   `listen_port` int(10) NOT NULL DEFAULT '51820' COMMENT 'UDP监听端口',
   `mtu` int(10) NOT NULL DEFAULT '1420',
+  `transport` varchar(8) NOT NULL DEFAULT 'udp' COMMENT 'udp=原生UDP直连, wss=WebSocket/TCP封装(防UDP限速)',
   `created_time` bigint(20) NOT NULL,
   `updated_time` bigint(20) NOT NULL,
   `status` int(10) NOT NULL DEFAULT '1',

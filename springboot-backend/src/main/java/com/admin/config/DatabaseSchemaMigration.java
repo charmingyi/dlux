@@ -34,6 +34,10 @@ public class DatabaseSchemaMigration implements ApplicationRunner {
         ensureColumn("node_wg", "egress",
                 "ALTER TABLE `node_wg` ADD COLUMN `egress` VARCHAR(64) NOT NULL DEFAULT '' AFTER `public_key`");
 
+        // wg_network.transport: udp=原生UDP直连(默认), wss=WebSocket/TCP封装(防运营商UDP限速)
+        ensureColumn("wg_network", "transport",
+                "ALTER TABLE `wg_network` ADD COLUMN `transport` VARCHAR(8) NOT NULL DEFAULT 'udp' AFTER `mtu`");
+
         long now = System.currentTimeMillis();
         jdbcTemplate.update("UPDATE `group_link` SET `created_time` = ? WHERE `created_time` = 0", now);
         jdbcTemplate.update("UPDATE `group_link` SET `updated_time` = `created_time` WHERE `updated_time` = 0");

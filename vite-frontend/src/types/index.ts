@@ -46,6 +46,8 @@ export interface WgNetwork {
   mode: 'mesh' | 'hub';
   listenPort: number;
   mtu: number;
+  /** 传输封装: udp=原生UDP直连, wss=WebSocket/TCP封装 */
+  transport?: 'udp' | 'wss';
   status: number;
   createdTime: number;
   members: WgMember[];

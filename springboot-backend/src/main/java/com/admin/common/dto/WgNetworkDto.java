@@ -22,6 +22,9 @@ public class WgNetworkDto {
 
     private Integer mtu;
 
+    /** 传输封装: udp=原生UDP直连, wss=WebSocket/TCP封装 */
+    private String transport;
+
     private Integer status;
 
     private Long createdTime;

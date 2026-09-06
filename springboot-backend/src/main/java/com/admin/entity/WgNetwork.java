@@ -29,4 +29,7 @@ public class WgNetwork extends BaseEntity {
     /** 接口MTU */
     private Integer mtu;
 
+    /** 传输封装: udp=原生UDP直连(默认), wss=WebSocket/TCP封装(防运营商UDP限速) */
+    private String transport;
+
 }

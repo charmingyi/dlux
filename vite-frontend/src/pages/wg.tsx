@@ -51,6 +51,8 @@ interface WgForm {
   /** 空 = 自动分配不重复网段 */
   subnet: string;
   mode: "mesh" | "hub";
+  /** wss = WebSocket/TCP 封装(防运营商UDP限速); udp = 原生UDP直连 */
+  transport: "udp" | "wss";
   /** 0 = 自动分配端口 */
   listenPort: number;
   mtu: number;
@@ -62,7 +64,8 @@ const defaultForm: WgForm = {
   id: null,
   name: "",
   subnet: "",
-  mode: "mesh",
+  mode: "hub",
+  transport: "wss",
   listenPort: 0,
   mtu: 1420,
   nodeIds: [],
@@ -214,6 +217,7 @@ export default function WgPage() {
       name: network.name,
       subnet: network.subnet,
       mode: network.mode,
+      transport: network.transport ?? "udp",
       listenPort: network.listenPort,
       mtu: network.mtu,
       nodeIds: network.members.map((member) => member.nodeId),
@@ -237,6 +241,8 @@ export default function WgPage() {
     if (form.mode === "hub" && (form.hubNodeId == null || !form.nodeIds.includes(form.hubNodeId))) {
       nextErrors.hubNodeId = "请选择中心节点";
     }
+    if (form.transport === "wss" && form.mode !== "hub")
+      nextErrors.transport = "WSS 封装仅支持 Hub 拓扑";
     setErrors(nextErrors);
     return Object.keys(nextErrors).length === 0;
   };
@@ -249,6 +255,7 @@ export default function WgPage() {
         name: form.name.trim(),
         subnet: form.subnet.trim(),
         mode: form.mode,
+        transport: form.transport,
         listenPort: form.listenPort,
         mtu: form.mtu,
         members: form.nodeIds.map((nodeId) => ({
@@ -632,6 +639,7 @@ export default function WgPage() {
                 setForm({
                   ...form,
                   mode: v,
+                  transport: v === "mesh" ? "udp" : form.transport,
                   hubNodeId: v === "hub" ? form.hubNodeId || form.nodeIds[0] || null : null,
                 })
               }
@@ -640,6 +648,23 @@ export default function WgPage() {
                 { value: "hub", label: "Hub 中心-分支" },
               ]}
             />
+          </div>
+
+          <div>
+            <div className="mb-1.5 text-[13px] font-medium text-fg">传输封装</div>
+            <SegmentedControl
+              value={form.transport}
+              onChange={(v) => setForm({ ...form, transport: v as "udp" | "wss" })}
+              options={[
+                { value: "wss", label: "WSS over TCP（推荐）" },
+                { value: "udp", label: "UDP 直连" },
+              ]}
+            />
+            <div className="mt-1.5 text-[11px] text-faint">
+              {form.transport === "wss"
+                ? "WG 外层包进 WebSocket/TCP，防运营商对 UDP 限速（实测 UDP 被压到 9-20M，WSS 稳定 250M）。仅支持 Hub 拓扑，面板自动在节点上部署 wstunnel。"
+                : "WG 外层走原生 UDP。运营商可能对长时大流量 UDP 限速。"}
+            </div>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

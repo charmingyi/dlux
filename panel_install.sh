@@ -13,7 +13,7 @@ set -e
 
 # 仓库与版本 (若自行 fork 请改为自己的仓库)
 REPO_URL="https://github.com/charmingyi/dlux"
-RELEASE_VERSION="1.3.4"
+RELEASE_VERSION="1.4.0"
 
 # 默认端口 (可用环境变量覆盖)
 FRONTEND_PORT="${PANEL_FRONTEND_PORT:-6366}"
