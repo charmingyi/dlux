@@ -25,7 +25,8 @@ const (
 	wgEgressTableBase     = 12100
 	wgEgressCheckInterval = 30 * time.Second
 	wgEgressResolveRetry  = 10 * time.Minute
-	wgEgressFailSwitch    = 2 // 连续失败N次才切换, 防抖
+	wgEgressFailSwitch    = 2  // 连续失败N次才切换, 防抖
+	wgEgressTcpDiscover   = 10 * time.Minute // TCP探测端口(22)发现重试间隔
 )
 
 type WgListEgressRequest struct{}
@@ -62,7 +63,10 @@ type wgEgressRule struct {
 	Table       int    `json:"table"`
 	Priority    int    `json:"priority"`
 	EverOk      bool   `json:"everOk,omitempty"` // 目的端曾从本机ping通过; 未通过前不切换(防禁ICMP误判)
+	TcpPort     int    `json:"tcpPort,omitempty"` // TCP健康探测端口(发现22可用后启用; 0=ICMP模式)
 	LastResolve int64  `json:"lastResolve,omitempty"`
+	LastTcpTry  int64  `json:"-"`
+	FailBack    int    `json:"-"`
 	FailCount   int    `json:"-"`
 }
 
@@ -236,6 +240,48 @@ func pingViaIface(iface, ip string, timeoutSec int) bool {
 	return cmd.Run() == nil
 }
 
+// ifaceSourceIP 返回网卡上用于出站的IPv4(去掉掩码长度)
+func ifaceSourceIP(ifaces []WgEgressIface, name string) string {
+	for _, f := range ifaces {
+		if f.Iface == name {
+			if i := strings.Index(f.IP, "/"); i > 0 {
+				return f.IP[:i]
+			}
+			return f.IP
+		}
+	}
+	return ""
+}
+
+// tcpViaIface 通过指定网卡的源IP对目的TCP端口做一次连接探测(2秒超时)。
+// 实测案例: 9929线路劣化时 ICMP 仍然全通但 TCP/UDP 全部失败, 只用 ping 会
+// 把坏线误判为健康。TCP 能连通才是"这条线真能用"的判定标准。
+func tcpViaIface(ifaces []WgEgressIface, iface, ip string, port int) bool {
+	src := ifaceSourceIP(ifaces, iface)
+	if src == "" {
+		return false
+	}
+	d := net.Dialer{
+		Timeout:   2 * time.Second,
+		LocalAddr: &net.TCPAddr{IP: net.ParseIP(src)},
+	}
+	conn, err := d.Dial("tcp", net.JoinHostPort(ip, fmt.Sprint(port)))
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
+}
+
+// lineHealthy 综合健康判定: TCP探测端口已知时以TCP为准, 否则用ICMP。
+// TCP模式失败即为不健康(ICMP通也可能只是坏线放行ICMP), ICMP模式下失败才回退看网关。
+func lineHealthy(r *wgEgressRule, ifaces []WgEgressIface, f *WgEgressIface, dest string) bool {
+	if r.TcpPort > 0 {
+		return tcpViaIface(ifaces, f.Iface, dest, r.TcpPort)
+	}
+	return pingViaIface(f.Iface, dest, 2)
+}
+
 // WgEgressCheckOnce 一轮巡检: 恢复规则、解析未决域名、健康检查与切换
 func WgEgressCheckOnce() {
 	wgEgressMu.Lock()
@@ -298,7 +344,9 @@ func findIface(ifaces []WgEgressIface, name string) *WgEgressIface {
 	return nil
 }
 
-// wgEgressApplyRule 确保规则存在且当前线路健康; 不健康则按候选顺序切换
+// wgEgressApplyRule 确保规则存在且当前线路健康; 不健康则按候选顺序切换。
+// 健康判定: 发现目的端:22可达后用TCP连接探测(能识别"ICMP通但TCP/UDP全死"的
+// 线路劣化, 实测9929线路多次如此), 否则回退ICMP。
 func wgEgressApplyRule(r *wgEgressRule, ifaces []WgEgressIface) {
 	active := findIface(ifaces, r.Active)
 	if active == nil {
@@ -312,15 +360,39 @@ func wgEgressApplyRule(r *wgEgressRule, ifaces []WgEgressIface) {
 		return
 	}
 
-	if pingViaIface(active.Iface, r.Resolved, 2) {
+	// 周期性尝试发现TCP探测端口(探测22; 成功一次即永久启用TCP模式)
+	if r.TcpPort == 0 && r.Resolved != "" && time.Now().Unix()-r.LastTcpTry > int64(wgEgressTcpDiscover/time.Second) {
+		r.LastTcpTry = time.Now().Unix()
+		if tcpViaIface(ifaces, active.Iface, r.Resolved, 22) {
+			r.TcpPort = 22
+			wgEgressSave()
+			fmt.Printf("[wg-egress] %s 目的端 %s:22 可达, 健康检查升级为TCP探测\n", r.Name, r.Resolved)
+		}
+	}
+
+	if lineHealthy(r, ifaces, active, r.Resolved) {
 		r.FailCount = 0
 		r.EverOk = true
+		// 用户指定了主线而当前在备用线上: 主线恢复健康后自动回切(连续2次, 防抖)
+		if r.Iface != "" && r.Iface != r.Active {
+			if pinned := findIface(ifaces, r.Iface); pinned != nil && lineHealthy(r, ifaces, pinned, r.Resolved) {
+				r.FailBack++
+				if r.FailBack >= 2 {
+					r.FailBack = 0
+					fmt.Printf("[wg-egress] %s 主线 %s 已恢复, 自动回切\n", r.Name, r.Iface)
+					wgEgressSwitch(r, pinned)
+				}
+				return
+			}
+			r.FailBack = 0
+		}
 		wgEgressEnsureRule(r)
 		return
 	}
+	r.FailBack = 0
 	r.FailCount++
-	// 目的端从未ping通过(可能禁ICMP): 不参与切换判断, 只保证规则在位
-	if !r.EverOk {
+	// ICMP模式且目的端从未探测通过(可能禁ICMP): 不参与切换判断, 只保证规则在位
+	if !r.EverOk && r.TcpPort == 0 {
 		wgEgressEnsureRule(r)
 		return
 	}
@@ -328,21 +400,22 @@ func wgEgressApplyRule(r *wgEgressRule, ifaces []WgEgressIface) {
 		return // 单次抖动, 不切换
 	}
 
-	// 当前线路连续失败: 尝试切换到其他健康线路
-	fmt.Printf("[wg-egress] %s -> %s 线路 %s 连续 %d 次不可达, 尝试切换\n", r.Name, r.Resolved, active.Iface, r.FailCount)
+	// 当前线路连续不健康: 尝试切换到其他健康线路
+	fmt.Printf("[wg-egress] %s -> %s 线路 %s 连续 %d 次不健康(探测=%s), 尝试切换\n",
+		r.Name, r.Resolved, active.Iface, r.FailCount, tcpModeName(r))
 	for _, cand := range wgEgressCandidates(r, ifaces) {
 		if cand.Iface == active.Iface {
 			continue
 		}
-		if pingViaIface(cand.Iface, r.Resolved, 2) {
+		if lineHealthy(r, ifaces, &cand, r.Resolved) {
 			wgEgressSwitch(r, &cand)
 			fmt.Printf("[wg-egress] %s 出口已切换: %s -> %s\n", r.Name, active.Iface, cand.Iface)
 			return
 		}
 	}
-	// 没有线路可达目的地: 若当前线路网关仍活着, 说明只是目的端禁ping, 维持现状
+	// 没有线路真正可用: 若当前线路网关仍活着, 维持现状(避免抖动)
 	if active.Gateway != "" && pingViaIface(active.Iface, active.Gateway, 2) {
-		fmt.Printf("[wg-egress] %s 线路 %s 网关可达但目的端不可ping, 维持现状\n", r.Name, active.Iface)
+		fmt.Printf("[wg-egress] %s 线路 %s 网关可达但目的端探测不通, 维持现状\n", r.Name, active.Iface)
 		r.FailCount = 0
 		return
 	}
@@ -454,6 +527,7 @@ func wgEgressSet(req *WgSetEgressRequest) error {
 	}
 	rule.Iface = req.Iface
 	rule.LastResolve = 0
+	rule.LastTcpTry = 0 // 新线路上立即尝试TCP探测发现
 	if ip := wgResolveIPv4(req.Dest); ip != "" {
 		rule.Resolved = ip
 		rule.LastResolve = time.Now().Unix()
@@ -504,4 +578,11 @@ func WgEgressCleanup(name string) {
 func listWireGuardEgress(req *WgListEgressRequest) (*WgListEgressResponse, error) {
 	ifaces := listEgressIfaces()
 	return &WgListEgressResponse{Ifaces: ifaces}, nil
+}
+
+func tcpModeName(r *wgEgressRule) string {
+	if r.TcpPort > 0 {
+		return fmt.Sprintf("tcp%d", r.TcpPort)
+	}
+	return "icmp"
 }
